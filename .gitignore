@@ -26,6 +26,9 @@ crashlytics-build.properties
 # 临时脚本 / 中间日志
 .temp/
 
+# 工作记忆（本机会话日志，不入库）
+.workbuddy/
+
 # ===== NDK / 原生编译 =====
 .externalNativeBuild/
 .cxx/
