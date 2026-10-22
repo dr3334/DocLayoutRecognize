@@ -95,6 +95,17 @@ fun OcrApp(
     val store = remember { OcrStore(context) }
     val settings = remember { OcrSettingsStore(context) }
 
+    // 设置项的真值存在 SharedPreferences 里，但 SP 不是 Compose State：
+    // 把 settings.mode 直接读出来传进界面，写回之后不会触发重组 —— 界面还显示旧值，
+    // 连 `if (mode == OcrMode.Cloud)` 控制的「模型」行也不会出现/消失。
+    // 所以各镜像一份 State：State 负责刷新界面，SP 负责重启后还在。
+    // 注意写入必须两边一起写（见下面的回调），漏一边就会出现「界面变了下次启动又回去」或反之。
+    var mode by remember { mutableStateOf(settings.mode) }
+    var baseUrl by remember { mutableStateOf(settings.baseUrl) }
+    var credential by remember { mutableStateOf(settings.credential) }
+    // 模型名不可编辑，只跟着 mode 的默认值显示，不需要 State
+    val model = settings.model
+
     var route by rememberSaveable {
         mutableStateOf(
             when (startRoute) {
@@ -252,19 +263,24 @@ fun OcrApp(
                     dark = dark,
                     onDarkChange = { dark = it },
                     recordCount = scanned.size,
-                    mode = settings.mode,
-                    baseUrl = settings.baseUrl,
-                    model = settings.model,
-                    credential = settings.credential,
+                    mode = mode,
+                    baseUrl = baseUrl,
+                    model = model,
+                    credential = credential,
                     onModeChange = { next ->
                         // 切模式时，如果地址还是上一个模式的默认值，就跟着换成新模式的默认值；
                         // 用户自己填过的地址（比如局域网 IP）不动
-                        val wasDefault = settings.baseUrl == OcrSettingsStore.defaultBaseFor(settings.mode)
+                        val wasDefault = baseUrl == OcrSettingsStore.defaultBaseFor(mode)
+                        mode = next
                         settings.mode = next
-                        if (wasDefault) settings.baseUrl = OcrSettingsStore.defaultBaseFor(next)
+                        if (wasDefault) {
+                            val nextDefault = OcrSettingsStore.defaultBaseFor(next)
+                            baseUrl = nextDefault
+                            settings.baseUrl = nextDefault
+                        }
                     },
-                    onBaseUrlChange = { settings.baseUrl = it },
-                    onCredentialChange = { settings.credential = it },
+                    onBaseUrlChange = { baseUrl = it; settings.baseUrl = it },
+                    onCredentialChange = { credential = it; settings.credential = it },
                     onClearRecords = {
                         scope.launch {
                             store.clear()

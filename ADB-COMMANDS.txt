@@ -1,0 +1,203 @@
+﻿==========================================================
+ DocLayout Recognize · adb 自测命令
+ 生成：2026-10-22 ｜ 设备：Titan_1 (F8) 1600x2560
+==========================================================
+
+【最容易踩的一条】
+  应用已经在前台时，带 extra 的 am start 不生效。
+  原因：MainActivity 没实现 onNewIntent，Intent 投递给已有实例后 extra 被忽略，
+        界面还停在原页面（截出来两张图会一模一样）。
+  所以下面每次切页面，前面都先 force-stop 一次。
+
+
+----------------------------------------------------------
+ 0. 环境（每开一个新窗口先跑这段）
+----------------------------------------------------------
+
+$adb = "C:\Users\Administrator\AppData\Local\Android\Sdk\platform-tools\adb.exe"
+$env:JAVA_HOME = "D:\Android_Studio\jbr"
+cd D:\android-lab\DocLayoutRecognize
+
+检查设备：
+& $adb devices -l
+（预期能看到  product:F8 model:Titan_1  device）
+
+
+----------------------------------------------------------
+ 1. 构建
+----------------------------------------------------------
+
+.\gradlew.bat assembleDebug --no-daemon
+
+产物：
+app\build\outputs\apk\debug\app-debug.apk
+
+注意 --no-daemon 不要去掉：
+本机 16G 内存，Kotlin 已配 in-process，再多一个 JVM 会 os::commit_memory errno=1455 / JVM crash。
+
+
+----------------------------------------------------------
+ 2. 安装 / 覆盖安装
+----------------------------------------------------------
+
+& $adb install -r app\build\outputs\apk\debug\app-debug.apk
+
+卸载：
+& $adb uninstall com.doclayout.recognize
+
+清空全部记录和已填的 Token（相当于恢复出厂）：
+& $adb shell pm clear com.doclayout.recognize
+
+
+----------------------------------------------------------
+ 3. 直达各页面（每条都是 force-stop + start，可整段粘）
+----------------------------------------------------------
+
+# 3.1 首页
+& $adb shell am force-stop com.doclayout.recognize
+& $adb shell am start -n com.doclayout.recognize/.MainActivity
+
+# 3.2 首页 · 空状态（不显示示例数据）
+& $adb shell am force-stop com.doclayout.recognize
+& $adb shell am start -n com.doclayout.recognize/.MainActivity --ei empty 1
+
+# 3.3 设置页
+& $adb shell am force-stop com.doclayout.recognize
+& $adb shell am start -n com.doclayout.recognize/.MainActivity --ei ocr 1
+
+# 3.4 设置页 · 深色
+& $adb shell am force-stop com.doclayout.recognize
+& $adb shell am start -n com.doclayout.recognize/.MainActivity --ei ocr 1 --ei dark 1
+
+# 3.5 结果页 · 竖屏（底部可拖抽屉）
+& $adb shell am force-stop com.doclayout.recognize
+& $adb shell am start -n com.doclayout.recognize/.MainActivity --ei ocr 2
+
+# 3.6 结果页 · 竖屏 + 抽屉默认展开
+& $adb shell am force-stop com.doclayout.recognize
+& $adb shell am start -n com.doclayout.recognize/.MainActivity --ei ocr 2 --ei open 1
+
+# 3.7 结果页 · 第 2 条记录
+& $adb shell am force-stop com.doclayout.recognize
+& $adb shell am start -n com.doclayout.recognize/.MainActivity --ei ocr 2 --ei record 1
+
+参数速查：
+  ocr     0=首页  1=设置  2=结果页
+  dark    1=深色
+  empty   1=无记录空状态（同时禁用示例数据）
+  record  第几条记录（从 0 开始）
+  open    1=竖屏抽屉默认展开
+  split   横屏左栏占比百分比：50=1:1  25=1:3  0=只看文本
+  scan    跳过选图，直接扫这个文件路径
+
+
+----------------------------------------------------------
+ 4. 转屏（横屏分栏必须先转屏，否则还是走竖屏布局）
+----------------------------------------------------------
+
+横屏：
+& $adb shell settings put system accelerometer_rotation 0
+& $adb shell settings put system user_rotation 1
+
+恢复竖屏：
+& $adb shell settings put system accelerometer_rotation 0
+& $adb shell settings put system user_rotation 0
+
+恢复自动旋转：
+& $adb shell settings put system accelerometer_rotation 1
+
+# 横屏 1:3 分栏（转屏之后跑）
+& $adb shell am force-stop com.doclayout.recognize
+& $adb shell am start -n com.doclayout.recognize/.MainActivity --ei ocr 2 --ei split 25
+
+# 横屏 1:1
+& $adb shell am force-stop com.doclayout.recognize
+& $adb shell am start -n com.doclayout.recognize/.MainActivity --ei ocr 2 --ei split 50
+
+# 横屏 · 只看文本（左栏收起到 0，会出现恢复胶囊）
+& $adb shell am force-stop com.doclayout.recognize
+& $adb shell am start -n com.doclayout.recognize/.MainActivity --ei ocr 2 --ei split 0
+
+
+----------------------------------------------------------
+ 5. 截图并拉回电脑
+----------------------------------------------------------
+
+$shot = "D:\android-lab\DocLayoutRecognize\.temp\shots"
+New-Item -ItemType Directory -Force -Path $shot | Out-Null
+& $adb shell screencap -p /sdcard/s.png
+& $adb pull /sdcard/s.png "$shot\home.png"
+
+一条龙（截当前屏，按时间命名）：
+$n = Get-Date -Format "HHmmss"
+& $adb shell screencap -p /sdcard/$n.png
+& $adb pull /sdcard/$n.png "$shot\$n.png"
+
+不要用  & $adb exec-out screencap -p > x.png
+PowerShell 会把二进制当文本转码，存出来的 PNG 打不开。
+
+
+----------------------------------------------------------
+ 6. 看日志
+----------------------------------------------------------
+
+# Markdown / KaTeX 渲染相关（render.html 里 console.log 会打到这）
+& $adb logcat -c
+& $adb logcat OcrMarkdown:D *:S
+
+# 崩溃
+& $adb logcat -c
+& $adb logcat AndroidRuntime:E *:S
+
+# 全部输出到文件再看
+& $adb logcat -d > .temp\logcat.txt
+
+
+----------------------------------------------------------
+ 7. 识别服务相关的两条
+----------------------------------------------------------
+
+# 7.1 看 Token / 模式是否写进去了（debug 包才能 run-as）
+& $adb shell run-as com.doclayout.recognize cat shared_prefs/ocr_vl.xml
+
+预期里应有：mode / base_url / model / credential
+凭据是明文存的，别把这段输出贴到公开地方。
+
+# 7.2 本地 PaddleX：USB 调试时手机连不到电脑的 127.0.0.1，先做端口映射
+& $adb reverse tcp:8080 tcp:8080
+
+映射后设置页里填  http://127.0.0.1:8080  就能用。
+取消映射：& $adb reverse --remove-all
+
+
+----------------------------------------------------------
+ 8. 跑完恢复现场
+----------------------------------------------------------
+
+& $adb shell settings put system accelerometer_rotation 1
+& $adb reverse --remove-all
+& $adb shell rm -f /sdcard/s.png /sdcard/s1.png /sdcard/s2.png /sdcard/s3.png
+
+
+----------------------------------------------------------
+ 9. 截图存放位置
+----------------------------------------------------------
+
+D:\android-lab\DocLayoutRecognize\.temp\shots\
+（.temp 已在 .gitignore 里，不会进仓库）
+
+
+==========================================================
+ 已知的两个坑（测的时候会遇到，不是命令问题）
+==========================================================
+
+1) 真实记录的公式显示成  \frac{1}{2}  这样的源码
+   原因：assets/render.html 第 6、70 行引 katex/katex.min.js 和 katex.min.css，
+        但 app/src/main/assets/ 下没有 katex/ 目录，KaTeX 没加载。
+        renderMath() 里 try/catch 把报错吃掉了，所以不崩溃、只是不渲染。
+   影响范围：只有真实记录（OcrMarkdownView）；示例记录走 RaTeX，不受影响。
+
+2) 首页看到的不是真实数据
+   没有任何真实记录时，界面用 data/sample/SampleRecords.kt 兜底。
+   要判断是不是真实数据：看结果页面板里有没有 Markdown 渲染的表格/公式，
+   示例走 OcrTex（矢量公式，排版规整），真实走 WebView（会有 CSS 表格）。
