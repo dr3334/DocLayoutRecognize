@@ -89,13 +89,13 @@ com.doclayout.recognize
 | 文件 | 行数 | 内容 |
 |---|---|---|
 | `local/OcrStore.kt` | 160 | 记录仓库。`class OcrStore`(:27)、`list()`(:32)、`save()`(:42)、`delete()`(:90)、`clear()`(:95)、`stageUri()`(:132)。一条记录一个目录 `filesDir/ocr/<id>/`：`record.json` + `pN.jpg` + `pN.md`，删记录 = 删目录 |
-| `local/OcrSettingsStore.kt` | 54 | 识别服务配置。`OcrMode`(:15)`{Cloud,Local}`、`class OcrSettingsStore`(:20)、`credential`(:37)。落在 SharedPreferences `"ocr_vl"`，四个键：mode / base_url / model / credential，**明文** |
+| `local/OcrSettingsStore.kt` | 66 | 识别服务配置。`OcrMode`(:15)`{Cloud,Local}`、`class OcrSettingsStore`(:20)、`credential`（三层兜底：用户填过 → `BuildConfig.OCR_TOKEN` → 空）。落在 SharedPreferences `"ocr_vl"`，四个键：mode / base_url / model / credential，**明文** |
 
 ### 4.3 `remote/` —— 识别服务
 
 | 文件 | 行数 | 内容 |
 |---|---|---|
-| `remote/OcrVlApi.kt` | 340 | `object OcrVlApi.parse()`(:58)。云端走星河社区异步任务：`POST /api/v2/ocr/jobs` → 轮询 `GET /api/v2/ocr/jobs/{id}` → 取预签名 `jsonUrl`（**不能带 Authorization**）；本地走 PaddleX `/layout-parsing` 同步一步出结果。模型 `PaddleOCR-VL-1.6`，超时 20s/120s，轮询 1.2s、上限 150s |
+| `remote/OcrVlApi.kt` | 363 | `object OcrVlApi.parse()`(:68)、`normalizeBase()`(:321)、`OPTIONAL_PAYLOAD`(:44)。云端走星河社区异步任务：`POST /api/v2/ocr/jobs` → 轮询 `GET /api/v2/ocr/jobs/{id}` → 取预签名 `jsonUrl`（**不能带 Authorization**）；本地走 PaddleX `/layout-parsing` 同步一步出结果。模型 `PaddleOCR-VL-1.6`，超时 20s/120s，轮询 1.2s、上限 150s |
 
 ### 4.4 `sample/` —— 演示数据
 
