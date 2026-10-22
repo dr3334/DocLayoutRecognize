@@ -1,5 +1,9 @@
-package com.doclayout.recognize
+package com.doclayout.recognize.ui.layout
 
+import com.doclayout.recognize.ui.icon.IconChevronRight
+import com.doclayout.recognize.ui.theme.OcrType
+import com.doclayout.recognize.ui.theme.Radii
+import com.doclayout.recognize.ui.theme.Ocr
 import androidx.compose.animation.core.Spring
 import androidx.compose.animation.core.animate
 import androidx.compose.animation.core.spring

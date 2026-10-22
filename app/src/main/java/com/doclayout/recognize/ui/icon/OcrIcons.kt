@@ -1,4 +1,4 @@
-package com.doclayout.recognize
+package com.doclayout.recognize.ui.icon
 
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.Canvas

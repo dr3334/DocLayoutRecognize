@@ -1,5 +1,6 @@
-package com.doclayout.recognize
+package com.doclayout.recognize.data.remote
 
+import com.doclayout.recognize.data.local.OcrMode
 import android.util.Base64
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay

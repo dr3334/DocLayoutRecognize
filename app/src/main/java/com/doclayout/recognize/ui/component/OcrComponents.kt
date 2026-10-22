@@ -1,5 +1,14 @@
-package com.doclayout.recognize
+package com.doclayout.recognize.ui.component
 
+import com.doclayout.recognize.data.model.OcrRecord
+import com.doclayout.recognize.ui.icon.IconBack
+import com.doclayout.recognize.ui.icon.IconChevronRight
+import com.doclayout.recognize.ui.icon.IconDoc
+import com.doclayout.recognize.ui.icon.SparkMark
+import com.doclayout.recognize.ui.theme.Ocr
+import com.doclayout.recognize.ui.theme.OcrType
+import com.doclayout.recognize.ui.theme.Radii
+import com.doclayout.recognize.ui.theme.Space
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import androidx.compose.foundation.Canvas

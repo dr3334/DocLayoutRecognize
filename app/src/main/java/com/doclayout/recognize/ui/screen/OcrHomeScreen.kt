@@ -1,5 +1,19 @@
-package com.doclayout.recognize
+package com.doclayout.recognize.ui.screen
 
+import com.doclayout.recognize.ui.component.CircleIconButton
+import com.doclayout.recognize.data.model.OcrRecord
+import com.doclayout.recognize.ui.component.ActionCard
+import com.doclayout.recognize.ui.component.Dot
+import com.doclayout.recognize.ui.component.EmptyRecords
+import com.doclayout.recognize.ui.component.OcrTopBar
+import com.doclayout.recognize.ui.component.RecordCard
+import com.doclayout.recognize.ui.component.SectionHeader
+import com.doclayout.recognize.ui.icon.IconCamera
+import com.doclayout.recognize.ui.icon.IconGallery
+import com.doclayout.recognize.ui.icon.IconSliders
+import com.doclayout.recognize.ui.theme.Ocr
+import com.doclayout.recognize.ui.theme.OcrType
+import com.doclayout.recognize.ui.theme.Space
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column

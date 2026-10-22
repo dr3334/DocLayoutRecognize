@@ -1,4 +1,4 @@
-package com.doclayout.recognize
+package com.doclayout.recognize.ui.layout
 
 import android.content.res.Configuration
 import androidx.compose.runtime.Composable

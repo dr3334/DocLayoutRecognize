@@ -1,5 +1,18 @@
-package com.doclayout.recognize
+package com.doclayout.recognize.ui
 
+import com.doclayout.recognize.ui.theme.LocalOcrColors
+import com.doclayout.recognize.data.local.OcrMode
+import com.doclayout.recognize.data.local.OcrSettingsStore
+import com.doclayout.recognize.data.local.OcrStore
+import com.doclayout.recognize.data.model.OcrRecord
+import com.doclayout.recognize.data.remote.OcrVlApi
+import com.doclayout.recognize.data.sample.sampleRecords
+import com.doclayout.recognize.ui.screen.OcrHomeScreen
+import com.doclayout.recognize.ui.screen.OcrResultScreen
+import com.doclayout.recognize.ui.screen.OcrSettingsScreen
+import com.doclayout.recognize.ui.theme.Ocr
+import com.doclayout.recognize.ui.theme.OcrColors
+import com.doclayout.recognize.ui.theme.OcrType
 import android.app.Activity
 import android.net.Uri
 import androidx.activity.compose.BackHandler

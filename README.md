@@ -22,24 +22,35 @@
 
 ## 目录
 
+包结构按「表现层 / 数据层」分家，依赖单向：`ui → data`，data 里不出现任何 Compose 类型。
+
 ```
 app/src/main/java/com/doclayout/recognize/
-├── MainActivity.kt         唯一 Activity，只负责挂载 OcrApp
-├── OcrApp.kt               路由 + 跨页面状态 + 选图/拍照/扫描流程
-├── OcrTheme.kt             颜色令牌 + 排版 + 间距（浅/深两套）
-├── OcrIcons.kt             Canvas 手绘线描图标（不引 material-icons-extended）
-├── OcrComponents.kt        顶栏 / 操作卡 / 缩略图 / 按钮 / 胶囊
-├── OcrHomeScreen.kt        首页：两块主操作卡 + 最近记录 + 空状态
-├── OcrSettingsScreen.kt    设置：识别 / 外观 / 数据 / 关于
-├── OcrResultScreen.kt      结果页：只做布局选择 + 两套布局
-├── OcrSplitPane.kt         可拖分割线 + 吸附档位
-├── OcrWindow.kt            布局判定（方向 + 宽度断点）
-├── OcrFormula.kt           公式渲染（RaTeX，矢量，不用 WebView）
-├── OcrMarkdownView.kt      Markdown 渲染（Markwon + WebView 双通道）
-├── OcrVlApi.kt             识别服务调用（云端异步 / 本地同步）
-├── OcrStore.kt             记录落盘（一条记录一个目录）
-└── OcrData.kt              示例数据
+├── MainActivity.kt                    唯一 Activity，只负责挂载 OcrApp
+│
+├── ui/                                表现层：只画界面，不做 IO
+│   ├── OcrApp.kt                      路由 + 跨页面状态 + 选图/拍照/扫描流程
+│   ├── theme/OcrTheme.kt              颜色令牌 + 排版 + 间距（浅/深两套）
+│   ├── icon/OcrIcons.kt               Canvas 手绘线描图标（不引 material-icons-extended）
+│   ├── component/OcrComponents.kt     顶栏 / 操作卡 / 缩略图 / 按钮 / 胶囊
+│   ├── layout/OcrWindow.kt            布局判定（方向 + 宽度断点）
+│   ├── layout/OcrSplitPane.kt         可拖分割线 + 吸附档位
+│   ├── render/OcrFormula.kt           公式渲染（RaTeX，矢量，不用 WebView）
+│   ├── render/OcrMarkdownView.kt      Markdown 渲染（WebView + assets/render.html）
+│   ├── screen/OcrHomeScreen.kt        首页：两块主操作卡 + 最近记录 + 空状态
+│   ├── screen/OcrSettingsScreen.kt    设置：识别 / 外观 / 数据 / 关于
+│   └── screen/OcrResultScreen.kt      结果页：只做布局选择 + 两套布局
+│
+└── data/                              数据层：不认识 Compose，可单独测
+    ├── model/OcrModels.kt             模型（OcrLine / OcrScanPage / OcrRecord）
+    ├── local/OcrStore.kt              记录落盘（一条记录一个目录）
+    ├── local/OcrSettingsStore.kt      识别服务配置（SharedPreferences "ocr_vl"）
+    ├── remote/OcrVlApi.kt             识别服务调用（云端异步 / 本地同步）
+    └── sample/SampleRecords.kt        内置示例数据（无真实记录时兜底）
 ```
+
+包与目录一一对应，所以看 `import` 就知道谁在跨层。唯一的例外是 `ui/OcrApp.kt`——
+它既做路由又做流程编排，是当前最大的架构债，要加功能前先考虑拆 ViewModel。
 
 资产：
 

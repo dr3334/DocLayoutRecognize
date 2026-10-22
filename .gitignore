@@ -23,6 +23,9 @@ output-metadata.json
 build_out.txt
 crashlytics-build.properties
 
+# 临时脚本 / 中间日志
+.temp/
+
 # ===== NDK / 原生编译 =====
 .externalNativeBuild/
 .cxx/

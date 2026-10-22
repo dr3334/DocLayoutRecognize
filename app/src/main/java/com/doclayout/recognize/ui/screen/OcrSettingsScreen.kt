@@ -1,5 +1,15 @@
-package com.doclayout.recognize
+package com.doclayout.recognize.ui.screen
 
+import com.doclayout.recognize.data.local.OcrMode
+import com.doclayout.recognize.ui.component.OcrTopBar
+import com.doclayout.recognize.ui.component.RowDivider
+import com.doclayout.recognize.ui.component.SectionLabel
+import com.doclayout.recognize.ui.component.SettingCard
+import com.doclayout.recognize.ui.component.SettingRow
+import com.doclayout.recognize.ui.component.SwitchRow
+import com.doclayout.recognize.ui.theme.Ocr
+import com.doclayout.recognize.ui.theme.OcrType
+import com.doclayout.recognize.ui.theme.Space
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box

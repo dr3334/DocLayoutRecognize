@@ -1,5 +1,8 @@
-package com.doclayout.recognize
+package com.doclayout.recognize.ui.render
 
+import com.doclayout.recognize.data.model.OcrScanPage
+import com.doclayout.recognize.ui.theme.Ocr
+import com.doclayout.recognize.ui.theme.OcrType
 import android.annotation.SuppressLint
 import android.graphics.Color
 import android.util.Log

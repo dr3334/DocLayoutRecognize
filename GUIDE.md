@@ -4,7 +4,20 @@
 
 先记住一句话，剩下的都能推出来：
 
-> **一个 Activity 挂一个 Compose 树，树里用 `when(route)` 切三个屏幕；屏幕是纯 UI，真正干活的是 `OcrApp.kt`；它只碰两个外部依赖 —— `OcrVlApi`（图进去、Markdown 出来）和 `OcrStore`（记录落盘、再读回来）。**
+> **一个 Activity 挂一个 Compose 树，树里用 `when(route)` 切三个屏幕；屏幕是纯 UI，真正干活的是 `ui/OcrApp.kt`；它只碰两个外部依赖 —— `data/remote/OcrVlApi`（图进去、Markdown 出来）和 `data/local/OcrStore`（记录落盘、再读回来）。**
+
+包结构一眼看懂：
+
+```
+MainActivity.kt   入口
+ui/               表现层（画界面）
+  OcrApp.kt       路由 + 状态 + 流程
+  theme/ icon/ component/ layout/ render/ screen/
+data/             数据层（不碰 Compose）
+  model/ local/ remote/ sample/
+```
+
+依赖只会从上往下走，看到 `import com.doclayout.recognize.data.*` 就知道跨到了数据层。
 
 ---
 
@@ -35,15 +48,15 @@ $adb = "C:\Users\Administrator\AppData\Local\Android\Sdk\platform-tools\adb.exe"
 
 横屏要看真效果，先转屏：`& $adb shell settings put system accelerometer_rotation 0; & $adb shell settings put system user_rotation 1`。
 
-> 这一步会看到**示例数据**（`sampleRecords`），不是真实识别结果。示例走 `OcrTex`（RaTeX 排版公式），真实记录走 `OcrMarkdownView`（WebView）。两条渲染路径是两套代码，别混淆。
+> 这一步会看到**示例数据**（`data/sample/SampleRecords.kt`），不是真实识别结果。示例走 `OcrTex`（RaTeX 排版公式），真实记录走 `OcrMarkdownView`（WebView）。两条渲染路径是两套代码，别混淆。
 
 ## Pass 1 · 骨架：只有 100 行（20 分钟）
 
 | 顺序 | 文件 | 只找这三件事 |
 |---|---|---|
-| 1 | `MainActivity.kt` 全文 40 行 | `setContent` 挂了谁；`intent.getXxxExtra` 有几个 |
-| 2 | `OcrApp.kt:69`（`fun OcrApp`） | 状态声明在 96–115 行附近；`when (route)` 在哪 |
-| 3 | `OcrApp.kt:53`（`enum OcrRoute`） | 只有 Home / Settings / Result 三个值 —— 没有 Navigation 库，没有 Fragment |
+| 1 | `MainActivity.kt` 全文 41 行 | `setContent` 挂了谁；`intent.getXxxExtra` 有几个 |
+| 2 | `ui/OcrApp.kt:82`（`fun OcrApp`） | 状态声明在 98–116 行；`when (route)` 在哪 |
+| 3 | `ui/OcrApp.kt:66`（`enum OcrRoute`） | 只有 Home / Settings / Result 三个值 —— 没有 Navigation 库，没有 Fragment |
 
 看完这三处，你就知道"页面切换"是什么：**一个 `mutableStateOf<OcrRoute>` 加一个 `when`**。
 
@@ -52,29 +65,29 @@ $adb = "C:\Users\Administrator\AppData\Local\Android\Sdk\platform-tools\adb.exe"
 只读一条路径，不要发散：**图 → Markdown → 磁盘 → 界面**。
 
 ```
-① OcrVlApi.parse()       OcrVlApi.kt:57       图进 → VlPage(markdown, elapsedMs, pages) 出
-② OcrStore.save()        OcrStore.kt:89       落 filesDir/ocr/<id>/：record.json + pN.jpg + pN.md
-③ OcrStore.list()        OcrStore.kt:79       扫目录 → List<OcrRecord>，按 createdAt 倒序
-④ OcrResultScreen        OcrResultScreen.kt:79 → PanelBody:512 → 按 record.isReal 分流
+① OcrVlApi.parse()   data/remote/OcrVlApi.kt:58    图进 → VlPage(markdown, elapsedMs, pages) 出
+② OcrStore.save()    data/local/OcrStore.kt:42     落 filesDir/ocr/<id>/：record.json + pN.jpg + pN.md
+③ OcrStore.list()    data/local/OcrStore.kt:32     扫目录 → List<OcrRecord>，按 createdAt 倒序
+④ OcrResultScreen    ui/screen/OcrResultScreen.kt:103 → PanelBody:536 → 按 record.isReal 分流
 ```
 
-配套要一起看的是 `OcrData.kt`（`OcrRecord` / `OcrScanPage` 的字段），因为 ①→②→③ 之间传递的就是它们。
+配套要一起看的是 `data/model/OcrModels.kt`（`OcrRecord` / `OcrScanPage` 的字段），因为 ①→②→③ 之间传递的就是它们。
 
 **读到 ① 时注意分叉**：`OcrMode.Cloud` 走「提交 job → 轮询 → 取预签名 URL」三步，`OcrMode.Local` 走 PaddleX 一步同步。同一函数两个分支，是故意的（云端同步接口的域名每个账号一份，换人就改代码；异步接口域名固定，只要 Token）。
 
-**读到 ② 时注意取舍**：一条记录一个目录，不是一个大 JSON。原因写在 `OcrStore.kt:70` 那行注释里 —— 大 JSON 每次改一条要重写全文，图片 base64 混进去会膨胀到几十 MB。
+**读到 ② 时注意取舍**：一条记录一个目录，不是一个大 JSON。原因写在 `OcrStore` 的类注释里 —— 大 JSON 每次改一条要重写全文，图片 base64 混进去会膨胀到几十 MB。
 
 ## Pass 3 · UI：先看断点，再看屏幕（40 分钟）
 
-UI 有 6 个文件、2000 多行，但**入口只有一个判断**：
+UI 有 9 个文件、2000 多行，但**入口只有一个判断**：
 
 | 顺序 | 文件 | 看什么 |
 |---|---|---|
-| 1 | `OcrWindow.kt:54` 全文 67 行 | 方向 + 宽度 → `OcrLayoutMode`。这是结果页布局的唯一依据 |
-| 2 | `OcrResultScreen.kt:79` | `OcrResultScreen` 只做 `when(layoutMode)`，然后调 `StackedResult`(:94) 或 `SplitResult`(:119) |
-| 3 | `OcrResultScreen.kt:331` `FloatingSheet` | 竖屏那套"可拖抽屉"，`sheetDrag`(:447) 是手势 |
-| 4 | `OcrSplitPane.kt:72` `SplitPaneState` | 横屏分栏。吸附档位 `[0,.25,.5,.75,1]`，拖到 0 会出现 `RestoreSplitPill` |
-| 5 | `OcrComponents.kt` / `OcrIcons.kt` / `OcrTheme.kt` | **最后再看**，纯样式。要改配色只翻 `OcrTheme.kt:186` 的 `object Ocr` |
+| 1 | `ui/layout/OcrWindow.kt:54` 全文 67 行 | 方向 + 宽度 → `OcrLayoutMode`。这是结果页布局的唯一依据 |
+| 2 | `ui/screen/OcrResultScreen.kt:103` | `OcrResultScreen` 只做 `when(layoutMode)`，然后调 `StackedResult`(:118) 或 `SplitResult`(:143) |
+| 3 | `ui/screen/OcrResultScreen.kt:355` `FloatingSheet` | 竖屏那套"可拖抽屉"，`sheetDrag`(:471) 是手势 |
+| 4 | `ui/layout/OcrSplitPane.kt:76` `SplitPaneState` | 横屏分栏。吸附档位 `[0,.25,.5,.75,1]`，拖到 0 会出现 `RestoreSplitPill` |
+| 5 | `ui/component/` · `ui/icon/` · `ui/theme/` | **最后再看**，纯样式。要改配色只翻 `ui/theme/OcrTheme.kt:186` 的 `object Ocr` |
 
 先看 1、2 就够理解结构了；3、4 是想改交互时才钻进去。
 
@@ -84,8 +97,8 @@ UI 有 6 个文件、2000 多行，但**入口只有一个判断**：
 
 | 数据来源 | 渲染器 | 为什么 |
 |---|---|---|
-| `sampleRecords`（示例） | `OcrFormula.kt:58` `OcrTex` → RaTeX | 结构化 `OcrLine` 列表，一行一行排；公式矢量渲染，不启 WebView |
-| `OcrStore.list()`（真实） | `OcrMarkdownView.kt:47` → `assets/render.html` | 服务返回的是**一整篇 Markdown**，含表格/列表/行内公式，自己排版等于造个 Markdown 引擎 |
+| `sample/SampleRecords.kt`（示例） | `ui/render/OcrFormula.kt:59` `OcrTex` → RaTeX | 结构化 `OcrLine` 列表，一行一行排；公式矢量渲染，不启 WebView |
+| `local/OcrStore.list()`（真实） | `ui/render/OcrMarkdownView.kt:50` → `assets/render.html` | 服务返回的是**一整篇 Markdown**，含表格/列表/行内公式，自己排版等于造个 Markdown 引擎 |
 
 读 `OcrMarkdownView.kt` 抓三个约束（注释里也写了）：
 1. `loadUrl` 只做一次，之后一律 `evaluateJavascript("setMarkdown(...)")`
@@ -98,14 +111,14 @@ UI 有 6 个文件、2000 多行，但**入口只有一个判断**：
 
 | # | 决策 | 在哪 |
 |---|---|---|
-| 1 | 单 Activity + 自定义路由，不引 Navigation | `MainActivity.kt` / `OcrApp.kt:53` |
-| 2 | 状态全在 `remember`，没有 ViewModel、没有 Repository | `OcrApp.kt:96-115` |
-| 3 | 一条记录一个目录，删记录 = 删目录 | `OcrStore.kt:74` |
-| 4 | 云端用异步 job 接口而非同步接口 | `OcrVlApi.kt:11-25` 的类注释 |
-| 5 | 公式有两条路：RaTeX（示例）/ KaTeX+WebView（真实） | `OcrFormula.kt` vs `OcrMarkdownView.kt` |
+| 1 | 单 Activity + 自定义路由，不引 Navigation | `MainActivity.kt` / `ui/OcrApp.kt:66` |
+| 2 | 状态全在 `remember`，没有 ViewModel、没有 Repository | `ui/OcrApp.kt:98-116` |
+| 3 | 一条记录一个目录，删记录 = 删目录 | `data/local/OcrStore.kt:27` |
+| 4 | 云端用异步 job 接口而非同步接口 | `data/remote/OcrVlApi.kt:11-25` 的类注释 |
+| 5 | 公式有两条路：RaTeX（示例）/ KaTeX+WebView（真实） | `ui/render/OcrFormula.kt` vs `ui/render/OcrMarkdownView.kt` |
 | 6 | Kotlin 编译器跑在 Gradle 进程内，`-Xmx1200m` | `gradle.properties` |
 
-第 2 条是当前最大的架构债：状态、路由、业务流程全在 `OcrApp.kt` 一个 397 行的 composable 里。要加"识别历史搜索""批量重试"这类功能，就得先把它拆成 ViewModel。
+第 2 条是当前最大的架构债：状态、路由、业务流程全在 `ui/OcrApp.kt` 一个 410 行的 composable 里。要加"识别历史搜索""批量重试"这类功能，就得先把它拆成 ViewModel。
 
 ## 改代码前必须知道的地雷
 

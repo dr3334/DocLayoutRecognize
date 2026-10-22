@@ -1,4 +1,4 @@
-package com.doclayout.recognize
+package com.doclayout.recognize.ui.theme
 
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.Immutable

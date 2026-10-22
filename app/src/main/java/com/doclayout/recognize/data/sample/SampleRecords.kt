@@ -1,55 +1,17 @@
-package com.doclayout.recognize
+package com.doclayout.recognize.data.sample
+
+import com.doclayout.recognize.data.model.OcrLine
+import com.doclayout.recognize.data.model.OcrLineKind
+import com.doclayout.recognize.data.model.OcrRecord
 
 /**
- * 假数据。真实项目里这些来自 Room 或文件系统，这里只为了让界面"有内容可排版"。
+ * 内置演示数据。真实项目里这些来自文件系统，这里只为了让界面"有内容可排版"。
  *
- * 为什么界面对着数据写：Claude 那种编辑式版式的重点在信息层级（标题/时间/页数/置信度），
+ * 为什么界面对着数据写：编辑式版式的重点在信息层级（标题/时间/页数/置信度），
  * 只有数据长得像真的，层级才看得出对不对。
- */
-
-enum class OcrLineKind { Heading, Body, Formula, Answer }
-
-/**
- * @param text 识别出来的纯文本（纸面上显示这个，因为扫描件上本来就是"印出来的样子"）
- * @param tex  对应的 LaTeX 源码（结果面板里用 RaTeX 排版，显示这个）
  *
- * 两个都留着，是因为"扫描件"和"结构化结果"本来就是两份东西：
- * 前者要还原纸，后者要能复制去 Markdown / Word。
+ * 只在"没有任何真实记录"时兜底（见 `OcrApp.kt`）；要空状态截图就 `--ei empty 1`。
  */
-data class OcrLine(val kind: OcrLineKind, val text: String, val tex: String? = null)
-
-/**
- * 真机上跑出来的一页：原图路径 + 该页的 Markdown。
- *
- * 和 [OcrLine] 是两套东西，故意不合并：
- *   OcrLine     —— 内置样例，是"已经拆好块"的假数据，用来演示版式
- *   OcrScanPage —— 云端 VLM 的真实产物，正文是一整段 Markdown（表格/公式都在里面）
- * 用 [OcrRecord.scan] 是否为空来区分，渲染层据此换实现。
- */
-data class OcrScanPage(
-    val imagePath: String,
-    val markdown: String,
-)
-
-data class OcrRecord(
-    val id: String,
-    val title: String,
-    val time: String,
-    val pages: Int,
-    val engine: String,
-    val confidence: String,
-    val duration: String,
-    val lines: List<OcrLine>,
-    /** 面板副标题；为空时用"置信度 X · 时长 · N 个文本块"那套样例文案 */
-    val meta: String = "",
-    /** 真实扫描页；为空 = 内置样例 */
-    val scan: List<OcrScanPage> = emptyList(),
-    /** 排序用；样例记录为 0 */
-    val createdAt: Long = 0L,
-) {
-    val isReal: Boolean get() = scan.isNotEmpty()
-}
-
 val sampleRecords: List<OcrRecord> = listOf(
     OcrRecord(
         id = "r1",

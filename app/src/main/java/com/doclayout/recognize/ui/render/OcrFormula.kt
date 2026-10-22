@@ -1,5 +1,6 @@
-package com.doclayout.recognize
+package com.doclayout.recognize.ui.render
 
+import com.doclayout.recognize.ui.theme.Ocr
 import android.util.LruCache
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.layout.BoxWithConstraints
