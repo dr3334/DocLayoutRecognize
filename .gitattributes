@@ -1,0 +1,11 @@
+# 统一换行符：源码一律 LF（跨 Windows / WSL 不会满屏 diff）
+* text=auto eol=lf
+
+# Windows 批处理必须是 CRLF，否则 cmd 解析会出错
+*.bat text eol=crlf
+*.cmd text eol=crlf
+
+# 二进制
+*.jar binary
+*.png binary
+*.apk binary

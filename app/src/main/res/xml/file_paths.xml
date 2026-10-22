@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- 相机拍照的落点：cacheDir/camera/。
+     只暴露这一个子目录：不给外部存储、也不把整个 cache 交出去，
+     别的 App 通过这个 Uri 只能拿到自己刚拍的那张。 -->
+<paths>
+    <cache-path name="camera" path="camera/" />
+</paths>

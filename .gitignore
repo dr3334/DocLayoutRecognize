@@ -1,0 +1,34 @@
+# ===== Gradle =====
+.gradle/
+build/
+app/build/
+!gradle/wrapper/gradle-wrapper.jar
+
+# 含本机 SDK 绝对路径，不能进仓库
+local.properties
+
+# ===== Android Studio / IntelliJ =====
+.idea/
+.kotlin/
+*.iml
+captures/
+
+# ===== 构建产物 =====
+*.apk
+*.aab
+*.ap_
+*.dex
+*.class
+output-metadata.json
+build_out.txt
+crashlytics-build.properties
+
+# ===== NDK / 原生编译 =====
+.externalNativeBuild/
+.cxx/
+
+# ===== 系统垃圾 =====
+.DS_Store
+Thumbs.db
+*.hprof
+hs_err_pid*.log
