@@ -163,7 +163,7 @@ PowerShell 会把二进制当文本转码，存出来的 PNG 打不开。
 预期里应有：mode / base_url / model / credential
 凭据是明文存的，别把这段输出贴到公开地方。
 
-**没有这个文件、但设置页能看到 Token 掩码（d054••••d9dc），是正常的** ——
+**没有这个文件、但设置页能看到 Token 掩码（ab12••••cd34），是正常的** ——
 说明你还没在设置页改过任何值，Token 走的是构建期预置的 BuildConfig.OCR_TOKEN
 （值来自 local.properties 的 ocr.token，打进 APK，不在 SharedPreferences 里）。
 一旦在设置页点开 Access Token 保存一次，就会写进 SharedPreferences。
