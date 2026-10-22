@@ -7,6 +7,7 @@ import com.doclayout.recognize.data.local.OcrStore
 import com.doclayout.recognize.data.model.OcrRecord
 import com.doclayout.recognize.data.remote.OcrVlApi
 import com.doclayout.recognize.data.sample.sampleRecords
+import com.doclayout.recognize.ui.screen.OcrStreamScreen
 import com.doclayout.recognize.ui.screen.OcrHomeScreen
 import com.doclayout.recognize.ui.screen.OcrResultScreen
 import com.doclayout.recognize.ui.screen.OcrSettingsScreen
@@ -63,7 +64,7 @@ import java.io.File
  * 没有用 Navigation 库：页面只有三个，而且状态要共享，一个 enum + when 更好读。
  */
 
-private enum class OcrRoute { Home, Settings, Result }
+private enum class OcrRoute { Home, Settings, Result, Stream }
 
 /** 一次扫描的整体状态。UI 只认这三个，不关心底下有多少张图 */
 private sealed interface ScanState {
@@ -111,6 +112,7 @@ fun OcrApp(
             when (startRoute) {
                 1 -> OcrRoute.Settings
                 2 -> OcrRoute.Result
+                3 -> OcrRoute.Stream
                 else -> OcrRoute.Home
             }
         )
@@ -248,9 +250,12 @@ fun OcrApp(
     CompositionLocalProvider(LocalOcrColors provides colors) {
         Box(Modifier.fillMaxSize().background(colors.canvas)) {
             when (route) {
+                OcrRoute.Stream -> OcrStreamScreen(onBack = { route = OcrRoute.Home })
+
                 OcrRoute.Home -> OcrHomeScreen(
                     records = records,
                     onOpenSettings = { route = OcrRoute.Settings },
+                    onOpenStream = { route = OcrRoute.Stream },
                     onCapture = ::launchCamera,
                     onImport = ::launchPicker,
                     onOpenRecord = { record ->

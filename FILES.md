@@ -81,6 +81,7 @@ com.doclayout.recognize
 | 文件 | 行数 | 内容 |
 |---|---|---|
 | `model/OcrModels.kt` | 55 | `OcrLineKind`(:14)、`OcrLine`、`OcrScanPage`、`OcrRecord`。零 Android 依赖，可被纯 JVM 单测直接引用 |
+| `model/OcrStreamModels.kt` | 55 | 区域级模型：`OcrStreamBlock`（bbox + 自己的裁剪图 + 该区域 Markdown）、`OcrStreamPage`（width/height/readingOrder/blocks）。流式页专用 |
 
 两套结构故意不合并：`OcrLine`（结构化文本块，样例 / 将来端侧 OCR 用）vs `OcrScanPage`（整页图 + Markdown，云端 VLM 用），用 `OcrRecord.isReal` 区分，渲染层据此换实现。
 
@@ -90,6 +91,7 @@ com.doclayout.recognize
 |---|---|---|
 | `local/OcrStore.kt` | 160 | 记录仓库。`class OcrStore`(:27)、`list()`(:32)、`save()`(:42)、`delete()`(:90)、`clear()`(:95)、`stageUri()`(:132)。一条记录一个目录 `filesDir/ocr/<id>/`：`record.json` + `pN.jpg` + `pN.md`，删记录 = 删目录 |
 | `local/OcrSettingsStore.kt` | 66 | 识别服务配置。`OcrMode`(:15)`{Cloud,Local}`、`class OcrSettingsStore`(:20)、`credential`（三层兜底：用户填过 → `BuildConfig.OCR_TOKEN` → 空）。落在 SharedPreferences `"ocr_vl"`，四个键：mode / base_url / model / credential，**明文** |
+| `local/OcrStreamDemo.kt` | 96 | 读 `assets/stream/document.json` + 区域裁剪图，解析成 `OcrStreamPage`；`toMarkdown()` 把区域转成 Markdown 片段。`parse()` 不依赖 Context，可单测 |
 
 ### 4.3 `remote/` —— 识别服务
 
@@ -111,7 +113,8 @@ com.doclayout.recognize
 | `render/OcrMarkdownView.kt` | 124 | 整篇 Markdown。`OcrMarkdownView`(:50) 用 WebView + `assets/render.html`；`loadUrl` 只做一次（带 `#app` 跳过内置 demo），之后 `evaluateJavascript("setMarkdown(...)")`；文本必须 `JSONObject.quote` 转义；`joinMarkdown()`(:120) 拼多页 |
 | `assets/render.html` | 466 行 / 89KB | 自研渲染器：`inline()` 在同一次正则扫描里切分 `![]()` 图片与 `$...$` 公式，`renderMath()` 调 KaTeX，`setMarkdown()` 是 Kotlin 侧唯一入口 |
 
-> ⚠️ `render.html:6`、`:70` 引 `katex/katex.min.css` 与 `katex/katex.min.js`，但 `assets/` 下没有 `katex/` 目录 → KaTeX 未定义，公式被 try/catch 吞掉后退化成纯 TeX 源码。补离线包即可修好。
+> KaTeX 已补：`assets/katex/`（`katex.min.js` 275KB + `katex.min.css` 23KB + 20 个 woff2 字体，共 545KB）。
+> 缺它时 `renderMath()` 的 try/catch 会把 `katex is not defined` 吞掉，公式退化成纯 TeX 源码（不崩溃）。
 
 ## 6. 布局适配层（`ui/layout/`）
 
@@ -127,6 +130,7 @@ com.doclayout.recognize
 | `screen/OcrHomeScreen.kt` | 181 | `OcrHomeScreen`(:58)：两块主操作卡（拍照 / 相册）+ 最近记录 + 空状态 + 页脚 |
 | `screen/OcrSettingsScreen.kt` | 267 | `OcrSettingsScreen`(:49)：识别（模式 / 地址 / 模型 / Token，Token 打码）、外观、数据、关于；`EditValueDialog` 通用编辑弹窗 |
 | `screen/OcrResultScreen.kt` | 822 | `OcrResultScreen`(:103) 只做布局选择：竖屏 `StackedResult`(:118)、横屏 `SplitResult`(:143)。竖屏抽屉 `FloatingSheet`(:355) + `sheetDrag`(:471)；面板 `PanelHeader`(:495) / `PanelBody`(:536) / `ResultPanel`(:639) / `ResultLine`(:670)；两套纸面 `PaperStage`(:196)（示例，走 RaTeX）、`RealPaperStage`(:727)（真实图片） |
+| `screen/OcrStreamScreen.kt` | 218 | 区域级流式渲染演示。上半原图 + 当前区域 bbox 高亮（按 `ContentScale.Fit` 换算），下半 `OcrMarkdownView` 逐字累积；按 `readingOrder` 逐区域推进，图片块整块淡入、文本块每 3 字符刷一次 |
 
 ## 8. 组件层（`ui/theme` `ui/icon` `ui/component`）
 

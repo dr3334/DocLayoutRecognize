@@ -1,5 +1,11 @@
 package com.doclayout.recognize.ui.screen
 
+import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.ui.draw.clip
+import com.doclayout.recognize.ui.icon.IconChevronRight
+import com.doclayout.recognize.ui.theme.Radii
 import com.doclayout.recognize.ui.component.CircleIconButton
 import com.doclayout.recognize.data.model.OcrRecord
 import com.doclayout.recognize.ui.component.ActionCard
@@ -61,6 +67,7 @@ fun OcrHomeScreen(
     onCapture: () -> Unit,
     onImport: () -> Unit,
     onOpenRecord: (OcrRecord) -> Unit,
+    onOpenStream: () -> Unit,
 ) {
     val c = Ocr.colors
     var showAll by remember { mutableStateOf(false) }
@@ -113,6 +120,9 @@ fun OcrHomeScreen(
                 }
 
                 Spacer(Modifier.height(34.dp))
+
+                StreamEntry(onClick = onOpenStream)
+                Spacer(Modifier.height(Space.md))
 
                 if (records.isEmpty()) {
                     // ── 空状态：主操作不动，只在下面给出引导
@@ -177,5 +187,35 @@ private fun HomeFooter() {
         Dot()
         Spacer(Modifier.width(8.dp))
         Text(text = "结果只留本机", style = OcrType.Caption.copy(fontSize = 12.sp), color = c.mutedSoft)
+    }
+}
+
+/**
+ * 首页底部的流式渲染入口。
+ *
+ * 做成整行卡片而不是第三张 ActionCard：ActionCard 是"拍照/相册"那种主操作，
+ * 这个是演示页入口，视觉分量应当低于主操作。
+ */
+@Composable
+private fun StreamEntry(onClick: () -> Unit) {
+    val c = Ocr.colors
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(Radii.lg))
+            .background(c.surfaceCard)
+            .clickable(onClick = onClick)
+            .padding(horizontal = Space.md, vertical = 14.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Column(Modifier.weight(1f)) {
+            Text(text = "流式渲染演示", style = OcrType.BodySm, color = c.ink)
+            Text(
+                text = "区域 JSON → 逐字出公式与样图",
+                style = OcrType.Caption.copy(fontSize = 12.5.sp),
+                color = c.muted,
+            )
+        }
+        IconChevronRight(c.mutedSoft, size = 14.dp, stroke = 1.5.dp)
     }
 }

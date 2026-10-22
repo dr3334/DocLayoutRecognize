@@ -51,6 +51,8 @@ fun OcrMarkdownView(
     markdown: String,
     modifier: Modifier = Modifier,
     textColor: Int = Color.parseColor("#1a1a1a"),
+    /** streaming: scroll to bottom after each update */
+    autoScrollBottom: Boolean = false,
 ) {
     val context = LocalContext.current
     var ready by remember { mutableStateOf(false) }
@@ -86,7 +88,9 @@ fun OcrMarkdownView(
 
     LaunchedEffect(markdown, ready) {
         if (ready) {
-            webView.evaluateJavascript("setMarkdown(${JSONObject.quote(markdown)})", null)
+            val js = "setMarkdown(${JSONObject.quote(markdown)})" +
+                if (autoScrollBottom) ";window.scrollTo(0, document.body.scrollHeight);" else ""
+            webView.evaluateJavascript(js, null)
         }
     }
 
