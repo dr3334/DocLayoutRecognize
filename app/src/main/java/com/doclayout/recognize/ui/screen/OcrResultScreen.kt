@@ -696,7 +696,8 @@ private fun ResultLine(line: OcrLine) {
             OcrTex(
                 tex = line.tex ?: line.text,
                 fontSize = 16.sp,
-                color = c.ink,
+                // 和 WebView 那条路径保持一致：公式统一用主色，不跟随正文墨色
+                color = c.primary,
                 fallback = line.text,
             )
         }

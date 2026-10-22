@@ -51,6 +51,10 @@
   .math-block { margin: 12px 0; overflow-x: auto; overflow-y: hidden; }
   .katex-display { margin: 0; }
   .katex { font-size: 1.08em; }
+  /* 公式统一染主色调（珊瑚橘 #CC785C）。Light / Dark 两套主题的 primary 恰好同值，
+     所以这里可以直接写死，不用跟着主题切换。
+     分数线、根号、括号都用 currentColor，只设 .katex 一处即可整块跟随。 */
+  .katex { color: #CC785C; }
   /* 长按取源码：必须关掉 WebView 自带的选择手势，否则长按满 500ms 会先弹出
    * 系统的选词/复制菜单，把我们自己的长按按掉了。 */
   .katex, .katex * { -webkit-user-select: none; user-select: none; -webkit-touch-callout: none; }
