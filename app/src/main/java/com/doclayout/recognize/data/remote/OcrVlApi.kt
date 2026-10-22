@@ -34,6 +34,16 @@ object OcrVlApi {
 
     const val MODEL = "PaddleOCR-VL-1.6"
 
+    /**
+     * multipart 里的 optionalPayload。
+     *
+     * 字段写入和 Content-Length 计算必须引用同一份 —— 手写 boundary 时长度算错，
+     * 服务端会直接拒收（400 或连接被重置），是最难查的一类 bug。
+     * 三项都写全：少字段服务端报 10008 参数错误。
+     */
+    private const val OPTIONAL_PAYLOAD =
+        """{"useDocOrientationClassify":true,"useDocUnwarping":true,"useChartRecognition":false}"""
+
     private const val CONNECT_TIMEOUT = 20_000
     private const val READ_TIMEOUT = 120_000
     private const val POLL_INTERVAL = 1_200L
@@ -66,7 +76,7 @@ object OcrVlApi {
         val page = when (mode) {
             OcrMode.Cloud -> {
                 require(token.isNotBlank()) { "云端模式需要 Access Token（设置 → 识别服务）" }
-                val base = baseUrl.ifBlank { DEFAULT_BASE }.trimEnd('/')
+                val base = normalizeBase(baseUrl.ifBlank { DEFAULT_BASE })
                 val jobId = submit(base, token, image, model)
                 fetchResult(poll(base, token, jobId))
             }
@@ -134,11 +144,9 @@ object OcrVlApi {
                 )
             }
             field("model", model)
-            // 手机拍的卷子十有八九是歪的，这两项默认开；想省钱可以在设置里以后做成开关
-            field(
-                "optionalPayload",
-                """{"useDocOrientationClassify":true,"useDocUnwarping":true}""",
-            )
+            // 手机拍的卷子十有八九是歪的，方向分类 + 去畸变默认开；
+            // 图表识别不开（试卷里用不上，开着还慢）。三项写全 —— 少字段服务端报 10008。
+            field("optionalPayload", OPTIONAL_PAYLOAD)
             out.write(
                 ("--$boundary\r\n" +
                     "Content-Disposition: form-data; name=\"file\"; filename=\"page.jpg\"\r\n" +
@@ -164,9 +172,8 @@ object OcrVlApi {
             "--$boundary\r\nContent-Disposition: form-data; name=\"model\"\r\n\r\n$model\r\n",
             0,
         )
-        val payload = """{"useDocOrientationClassify":true,"useDocUnwarping":true}"""
         val payloadPart = part(
-            "--$boundary\r\nContent-Disposition: form-data; name=\"optionalPayload\"\r\n\r\n$payload\r\n",
+            "--$boundary\r\nContent-Disposition: form-data; name=\"optionalPayload\"\r\n\r\n$OPTIONAL_PAYLOAD\r\n",
             0,
         )
         val fileHead = "--$boundary\r\nContent-Disposition: form-data; name=\"file\"; " +
@@ -303,7 +310,23 @@ object OcrVlApi {
 
     // ---------- HTTP 小工具 ----------
 
-    private fun open(url: String, token: String?): HttpURLConnection =
+        /**
+     * 把用户填的地址规整成根地址。
+     *
+     * 设置页提示写的是"接口根地址"，但总有人把官方示例里的完整 URL
+     * （https://paddleocr.aistudio-app.com/api/v2/ocr/jobs）整条粘进来。
+     * 直接拼会变成 .../api/v2/ocr/jobs/api/v2/ocr/jobs → 404，
+     * 而报错只说 HTTP 404，很难联想到是地址多了尾巴。
+     */
+    private fun normalizeBase(raw: String): String {
+        var b = raw.trim().trimEnd('/')
+        for (s in listOf("/api/v2/ocr/jobs", "/layout-parsing")) {
+            if (b.endsWith(s, ignoreCase = true)) b = b.dropLast(s.length)
+        }
+        return b.trimEnd('/').ifBlank { DEFAULT_BASE }
+    }
+
+private fun open(url: String, token: String?): HttpURLConnection =
         (URL(url).openConnection() as HttpURLConnection).apply {
             connectTimeout = CONNECT_TIMEOUT
             readTimeout = READ_TIMEOUT

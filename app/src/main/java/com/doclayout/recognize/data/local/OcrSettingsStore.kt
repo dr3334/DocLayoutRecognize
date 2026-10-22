@@ -1,6 +1,7 @@
 package com.doclayout.recognize.data.local
 
 import android.content.Context
+import com.doclayout.recognize.BuildConfig
 import com.doclayout.recognize.data.remote.OcrVlApi
 
 /**
@@ -34,8 +35,19 @@ class OcrSettingsStore(context: Context) {
         get() = sp.getString("model", OcrVlApi.MODEL).orEmpty()
         set(v) = sp.edit().putString("model", v.trim()).apply()
 
+    /**
+     * Access Token。
+     *
+     * 三层兜底：用户填过的值 → 构建期注入的 [BuildConfig.OCR_TOKEN]（来自 local.properties，
+     * 不进仓库）→ 空。用 `sp.contains` 而不是 `ifBlank` 判断，是为了让"主动清空"生效：
+     * 用户把输入框清掉写回 "" 之后，不应该又冒出预置值。
+     */
     var credential: String
-        get() = sp.getString("credential", "").orEmpty()
+        get() = if (sp.contains("credential")) {
+            sp.getString("credential", "").orEmpty()
+        } else {
+            BuildConfig.OCR_TOKEN
+        }
         set(v) = sp.edit().putString("credential", v.trim()).apply()
 
     /** 云端必须有 Token；本地服务通常不鉴权，地址填了就算配好 */

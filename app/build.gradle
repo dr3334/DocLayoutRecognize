@@ -4,6 +4,15 @@ plugins {
     id 'org.jetbrains.kotlin.plugin.compose'
 }
 
+// 调试用凭据从 local.properties 读 —— 该文件已在 .gitignore 里，
+// 所以 Token 不会跟着代码进仓库，别人 clone 下来也拿不到。
+// 没有这个键也能编译，只是 BuildConfig.OCR_TOKEN 是空串。
+def localProps = new Properties()
+def localPropsFile = rootProject.file('local.properties')
+if (localPropsFile.exists()) {
+    localPropsFile.withInputStream { localProps.load(it) }
+}
+
 android {
     namespace 'com.doclayout.recognize'
     compileSdk 35
@@ -17,6 +26,10 @@ android {
 
         // RaTeX 的 AAR 带三套 .so，只保留真机 + 模拟器两套
         ndk { abiFilters 'arm64-v8a', 'x86_64' }
+
+        // 预置 Access Token：设置页里没填过时用它兜底（见 OcrSettingsStore.credential）。
+        // 值来自 local.properties 的 ocr.token，仓库里看不到明文。
+        buildConfigField "String", "OCR_TOKEN", "\"${localProps.getProperty('ocr.token', '')}\""
     }
 
     buildTypes {
@@ -33,6 +46,8 @@ android {
     }
     buildFeatures {
         compose = true
+        // AGP 8 起 BuildConfig 默认不生成，要显式打开（上面的 buildConfigField 依赖它）
+        buildConfig = true
     }
 }
 
