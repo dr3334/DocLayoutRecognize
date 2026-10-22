@@ -17,8 +17,8 @@ object OcrStreamDemo {
 
     private const val DOC = "stream/document.json"
 
-    /** 原图（给页面上半部分定位用） */
-    const val SOURCE_IMAGE = "stream/source.png"
+    /** 原图（给页面上半部分定位用）。jpg 是因为整页扫描图转 png 会到 1.2MB，jpg 只要 375KB */
+    const val SOURCE_IMAGE = "stream/source.jpg"
 
     /** 区域裁剪图的前缀：JSON 里写的是 `assets/p0001-b0001.png`，WebView 侧要补到 assets 根 */
     private const val CROP_PREFIX = "stream/"
@@ -77,6 +77,9 @@ object OcrStreamDemo {
      */
     fun toMarkdown(block: OcrStreamBlock): String = when {
         block.resource != null && block.text.isBlank() -> "![]($CROP_PREFIX${block.resource})"
+        // 独立公式块：content.format = latex，正文是裸 LaTeX（没有 $ 包裹），
+        // 直接扔进 Markdown 只会显示成一段普通文字，必须自己补 $$。
+        block.format == "latex" -> "$$${block.text.trim()}$$"
         else -> block.text.trim()
     }
 }
