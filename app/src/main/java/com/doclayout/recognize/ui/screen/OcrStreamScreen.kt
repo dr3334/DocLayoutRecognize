@@ -1,6 +1,7 @@
 package com.doclayout.recognize.ui.screen
 
 import android.graphics.BitmapFactory
+import android.util.Log
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
@@ -215,6 +216,7 @@ val colorOf = remember(ordered) { assignBlockColors(ordered) }
                                 }?.let { tapped ->
                                     // 再点同一块 = 取消选中
                                     selectedId = if (selectedId == tapped.id) null else tapped.id
+                                    Log.d("LinkDebug", "image tap -> ${tapped.id}")
                                     onBlockClick(tapped)
                                 }
                             }
@@ -295,7 +297,7 @@ val colorOf = remember(ordered) { assignBlockColors(ordered) }
                 // 选中某块时关掉自动滚底，否则每帧 setMarkdown 都把视线拽回底部
                 autoScrollBottom = selectedId == null,
                 highlightBlockId = selectedId,
-                onBlockTap = { id -> selectedId = id },
+                onBlockTap = { id -> Log.d("LinkDebug", "text tap -> $id"); selectedId = id },
                 modifier = Modifier.fillMaxSize().padding(Space.sm),
             )
             if (shown.isEmpty()) {
