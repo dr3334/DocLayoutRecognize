@@ -524,10 +524,12 @@ function applyHighlight() {
 
 /* 由 Kotlin 调：highlightBlocks('b0001,b0002')，空串表示清空。
  * 传入顺序就是阅读顺序，滚动只滚到第一个。 */
-function highlightBlocks(csv) {
+function highlightBlocks(csv, scroll) {
   curHighlight = csv ? String(csv).split(',') : [];
   applyHighlight();
   if (!curHighlight.length) return;
+  // 合并多块时不要滚：否则视线会被拽到第一个块（通常在最上面）
+  if (scroll === false) return;
   var first = document.querySelector('[data-blk="' + curHighlight[0] + '"]');
   if (first && first.scrollIntoView) {
     first.scrollIntoView({ block: 'center', behavior: 'smooth' });

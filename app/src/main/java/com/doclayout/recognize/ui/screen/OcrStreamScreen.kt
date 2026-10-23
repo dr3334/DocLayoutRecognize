@@ -54,6 +54,7 @@ import com.doclayout.recognize.ui.theme.Ocr
 import com.doclayout.recognize.ui.theme.OcrType
 import com.doclayout.recognize.ui.theme.Radii
 import com.doclayout.recognize.ui.theme.Space
+import androidx.compose.foundation.gestures.detectDragGesturesAfterLongPress
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.ui.graphics.PathEffect
 import androidx.compose.ui.graphics.drawscope.Fill
@@ -119,6 +120,9 @@ fun OcrStreamScreen(
 
     // 上下联动 + 区域合并：选中的是一组 id。连续点几个块 = 多选，原图按并集画一个大框
     var selectedIds by remember { mutableStateOf<Set<String>>(emptySet()) }
+    // 长按拖动时的临时范围（空 = 没在拖）。拖动中用它做预览，松手才提交
+    var dragAnchor by remember { mutableStateOf<Int?>(null) }
+    var dragRange by remember { mutableStateOf<Set<String>>(emptySet()) }
 
     LaunchedEffect(playKey, data) {
         doneText = ""
@@ -173,19 +177,12 @@ fun OcrStreamScreen(
         }
     }
 
-    fun applySelection(block: OcrStreamBlock) {
-        // 点一次加入选中集，再点移除 —— "连续点几个块"自然就是多选/合并
-        val next = if (block.id in selectedIds) selectedIds - block.id else selectedIds + block.id
-        selectedIds = next
-        if (next.isEmpty()) return
-
-        // 按阅读顺序取，复制出来的顺序才和视觉一致
-        val picked = ordered.filter { it.id in next }
+    fun copyBlocks(picked: List<OcrStreamBlock>) {
         val text = picked.filterNot { it.isImage }
             .joinToString("\n\n") { OcrStreamDemo.toMarkdown(it).trim() }
             .trim()
         if (text.isEmpty()) {
-            hintText = "选中的 ${picked.size} 个区域都是图片，没有可复制的文本"
+            hintText = "选中的区域都是图片，没有可复制的文本"
             return
         }
         clipboard.setText(AnnotatedString(text))
@@ -196,8 +193,29 @@ fun OcrStreamScreen(
         }
     }
 
+    // 单击：只选这一个，再点同一个则取消。合并走长按拖动，两者不重合。
+    fun applySingle(block: OcrStreamBlock) {
+        if (selectedIds == setOf(block.id)) {
+            selectedIds = emptySet()
+            return
+        }
+        selectedIds = setOf(block.id)
+        copyBlocks(listOf(block))
+    }
+
+    // 长按拖动松手：把起点到终点之间的所有块（按 readingOrder）合成一个区域
+    fun commitDrag(ids: Set<String>) {
+        val picked = ordered.filter { it.id in ids }
+        if (picked.isEmpty()) return
+        selectedIds = picked.map { it.id }.toSet()
+        copyBlocks(picked)
+    }
+
     // 四色分配：纯计算，一次算好；不要写成在 DrawScope 里现算
     val colorOf = remember(ordered) { assignBlockColors(ordered) }
+
+    // 拖动中看 dragRange（预览），松手后看 selectedIds（已提交）
+    val effectiveIds = if (dragRange.isNotEmpty()) dragRange else selectedIds
 
     Box(Modifier.fillMaxSize()) {
     Column(Modifier.fillMaxSize().safeDrawingPadding()) {
@@ -249,24 +267,55 @@ fun OcrStreamScreen(
                         // 命中判断：屏幕坐标反算回原图坐标。Compose 不需要叠一层透明矩形
                         // （那是 View 的 hit-test 思路），直接算落在哪个 bbox 里就行。
                         .pointerInput(scale, dx, dy, ordered) {
+                            // 单击 = 单选（再点同一块取消）；点空白也取消
                             detectTapGestures { pos ->
-                                val ix = (pos.x - dx) / scale
-                                val iy = (pos.y - dy) / scale
-                                ordered.firstOrNull { b ->
-                                    b.bbox.size == 4 &&
-                                        ix >= b.bbox[0] && ix <= b.bbox[2] &&
-                                        iy >= b.bbox[1] && iy <= b.bbox[3]
-                                }?.let { tapped ->
-                                    Log.d("LinkDebug", "image tap -> ${tapped.id}")
-                                    applySelection(tapped)
-                                    onBlockClick(tapped)
+                                val hit = hitAt(ordered, pos, dx, dy, scale)
+                                if (hit == null) {
+                                    selectedIds = emptySet()
+                                } else {
+                                    Log.d("LinkDebug", "image tap -> ${hit.id}")
+                                    applySingle(hit)
+                                    onBlockClick(hit)
                                 }
                             }
+                        }
+                        // 长按 + 拖动 = 范围合并，松手才生效。
+                        // 必须是独立的 pointerInput：一个 pointerInput 里只能 await 一种手势，
+                        // 两个探测器塞一起会互相抢事件（表现为长按后单击也触发）。
+                        .pointerInput(scale, dx, dy, ordered) {
+                            detectDragGesturesAfterLongPress(
+                                onDragStart = { pos ->
+                                    val start = hitAt(ordered, pos, dx, dy, scale)
+                                    dragAnchor = start?.let { ordered.indexOf(it) }
+                                    dragRange = start?.let { setOf(it.id) } ?: emptySet()
+                                },
+                                onDrag = { change, _ ->
+                                    change.consume()
+                                    val anchor = dragAnchor
+                                    val cur = hitAt(ordered, change.position, dx, dy, scale)
+                                        ?.let { ordered.indexOf(it) }
+                                    if (anchor != null && cur != null) {
+                                        val a = minOf(anchor, cur)
+                                        val b = maxOf(anchor, cur)
+                                        dragRange = ordered.subList(a, b + 1).map { it.id }.toSet()
+                                    }
+                                },
+                                onDragEnd = {
+                                    val ids = dragRange
+                                    dragAnchor = null
+                                    dragRange = emptySet()
+                                    commitDrag(ids)
+                                },
+                                onDragCancel = {
+                                    dragAnchor = null
+                                    dragRange = emptySet()
+                                },
+                            )
                         },
                 ) {
                     // 合并框：选中 >= 2 个时取并集（左上取最小、右下取最大），画一个虚线大框
-                    if (selectedIds.size >= 2) {
-                        val picked = ordered.filter { it.id in selectedIds && it.bbox.size == 4 }
+                    if (effectiveIds.size >= 2) {
+                        val picked = ordered.filter { it.id in effectiveIds && it.bbox.size == 4 }
                         if (picked.isNotEmpty()) {
                             val x1 = picked.minOf { it.bbox[0] }
                             val y1 = picked.minOf { it.bbox[1] }
@@ -291,7 +340,7 @@ fun OcrStreamScreen(
                         val b = block.bbox
                         if (b.size != 4) return@forEach
                         val isCurrent = block.id == activeBlock?.id
-                        val isSelected = block.id in selectedIds
+                        val isSelected = block.id in effectiveIds
                         drawRect(
                             // 已识别的用低透明度 + 细线：29 个框全用不透明 2dp 会把原图糊满
                             color = (colorOf[block.id] ?: c.primary)
@@ -360,11 +409,11 @@ fun OcrStreamScreen(
             OcrMarkdownView(
                 markdown = shown,
                 // 选中某块时关掉自动滚底，否则每帧 setMarkdown 都把视线拽回底部
-                autoScrollBottom = selectedIds.isEmpty(),
-                highlightBlockIds = ordered.filter { it.id in selectedIds }.map { it.id },
+                autoScrollBottom = effectiveIds.isEmpty(),
+                highlightBlockIds = ordered.filter { it.id in effectiveIds }.map { it.id },
                 onBlockTap = { id ->
                     Log.d("LinkDebug", "text tap -> $id")
-                    ordered.firstOrNull { it.id == id }?.let { applySelection(it) }
+                    ordered.firstOrNull { it.id == id }?.let { applySingle(it) }
                 },
                 modifier = Modifier.fillMaxSize().padding(Space.sm),
             )
@@ -454,4 +503,22 @@ private fun touching(a: List<Int>, b: List<Int>, gap: Float): Boolean {
     if (a.size != 4 || b.size != 4) return false
     return !(a[2] + gap < b[0] || b[2] + gap < a[0] ||
         a[3] + gap < b[1] || b[3] + gap < a[1])
+}
+
+/** 屏幕坐标反算回原图坐标，返回命中的区域。Compose 不需要叠透明矩形做 hit-test。 */
+private fun hitAt(
+    list: List<OcrStreamBlock>,
+    pos: Offset,
+    dx: Float,
+    dy: Float,
+    scale: Float,
+): OcrStreamBlock? {
+    if (scale <= 0f) return null
+    val ix = (pos.x - dx) / scale
+    val iy = (pos.y - dy) / scale
+    return list.firstOrNull { b ->
+        b.bbox.size == 4 &&
+            ix >= b.bbox[0] && ix <= b.bbox[2] &&
+            iy >= b.bbox[1] && iy <= b.bbox[3]
+    }
 }

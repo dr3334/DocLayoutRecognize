@@ -56,6 +56,8 @@ fun OcrMarkdownView(
     autoScrollBottom: Boolean = false,
     /** 当前选中的区域 id 列表；非空时 WebView 把对应块高亮并滚到第一个 */
     highlightBlockIds: List<String> = emptyList(),
+    /** 高亮时是否滚到第一个区域；多区域合并时传 false，避免视线被拽走 */
+    scrollToFirst: Boolean = true,
     /** 点中正文里的某个区域时回调（参数是区域 id，如 b0005） */
     onBlockTap: (String) -> Unit = {},
 ) {
@@ -110,7 +112,7 @@ fun OcrMarkdownView(
     LaunchedEffect(highlightBlockIds, ready) {
         if (ready) {
             webView.evaluateJavascript(
-                "highlightBlocks(${JSONObject.quote(highlightBlockIds.joinToString(","))})",
+                "highlightBlocks(${JSONObject.quote(highlightBlockIds.joinToString(","))}, $scrollToFirst)",
                 null,
             )
         }
