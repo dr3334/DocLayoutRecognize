@@ -17,6 +17,7 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.safeDrawingPadding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -62,6 +63,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.input.pointer.pointerInput
 import com.doclayout.recognize.data.model.OcrStreamBlock
 import kotlinx.coroutines.delay
+import kotlin.math.abs
 import kotlin.math.min
 
 /*
@@ -120,6 +122,13 @@ fun OcrStreamScreen(
 
     // 上下联动 + 区域合并：选中的是一组 id。连续点几个块 = 多选，原图按并集画一个大框
     var selectedIds by remember { mutableStateOf<Set<String>>(emptySet()) }
+
+    // ── 框编辑（方案 B：全部按钮操作，不新增任何手势）
+    // 编辑是"叠加层"，原数据一个字都不改：assets 里的 document.json 是模型的原始输出，
+    // 框偏移本身是模型的错误，属于"事实"。这里的移动/删除只用于你自己对齐查看，
+    // 不回写文件、不传回识别流程，重播即还原。所以撤销 = 弹 history 一格，重置 = edits 清空。
+    var edits by remember { mutableStateOf<Map<String, BlockEdit>>(emptyMap()) }
+    var history by remember { mutableStateOf<List<Map<String, BlockEdit>>>(emptyList()) }
     // 长按拖动时的临时范围（空 = 没在拖）。拖动中用它做预览，松手才提交
     var dragAnchor by remember { mutableStateOf<Int?>(null) }
     var dragRange by remember { mutableStateOf<Set<String>>(emptySet()) }
@@ -129,6 +138,9 @@ fun OcrStreamScreen(
         typing = ""
         activeIndex = -1
         selectedIds = emptySet()
+        // 重播 = 回到模型原始输出的样子，编辑一并丢弃
+        edits = emptyMap()
+        history = emptyList()
         if (data == null) return@LaunchedEffect
 
         var acc = ""
@@ -159,13 +171,46 @@ fun OcrStreamScreen(
         activeIndex = -1
     }
 
-    val shown = when {
+    // 流式态的正文：轻量，每次重组算一遍即可
+    val streamed = when {
         typing.isEmpty() -> doneText
         doneText.isEmpty() -> typing
         // 空锚点把"正在打字"这段从上一个区域里隔离出来，点它不会命中错区域
         else -> "$doneText\n\n@@blk:@@\n$typing"
     }
+
+    // 编辑态的正文：只在 edits 或原始数据变化时重建一次（29 块 toMarkdown 不便宜）。
+    // 用 null 表示"没编辑过"，让 shown 回落到流式态 —— 这样没用编辑的人行为完全不变。
+    val editedMarkdown = remember(ordered, edits) {
+        if (edits.isEmpty()) {
+            null
+        } else {
+            // 删掉的块必须从正文里消失，而逐字累积的 doneText 改不了，只能重建带锚点的全文
+            ordered.filterNot { edits[it.id]?.hidden == true }
+                .joinToString("\n\n") { "@@blk:${it.id}@@\n${OcrStreamDemo.toMarkdown(it)}" }
+        }
+    }
+    val shown = editedMarkdown ?: streamed
     val activeBlock = ordered.getOrNull(activeIndex)
+
+    // 一个块在"当前视图"里长什么样：隐藏的返回 null，移动过的返回换了 bbox 的副本。
+    // 只影响绘制与命中，四色仍按原始 ordered 算 —— 框挪一下不应该让整页重新配色。
+    fun viewOf(b: OcrStreamBlock): OcrStreamBlock? {
+        val e = edits[b.id] ?: return b
+        if (e.hidden) return null
+        return e.bbox?.let { b.copy(bbox = it) } ?: b
+    }
+
+    // 命中判断要用"当前视图"的 bbox：框挪过之后，点在旧位置不应该还命中它。
+    // 必须 remember —— 每次重组新建 List 会让 pointerInput 的 key 每帧变化、手势被反复重启。
+    val blocksNow = remember(ordered, edits) { ordered.mapNotNull { viewOf(it) } }
+
+    // activeIndex 就是进度：它之前的块都已经"识别过"，已识别集合不用另存状态
+    // （加一个 mutableList 记录"画过的框"等于两份数据要同步，迟早不一致）。
+    val revealed = remember(ordered, activeIndex, edits) {
+        (if (activeIndex >= 0) ordered.take(activeIndex + 1) else ordered)
+            .mapNotNull { viewOf(it) }
+    }
 
     // 选中区域 = 复制它的内容并给一条轻提示；再点同一块取消选中（不复制）
     val clipboard = LocalClipboardManager.current
@@ -205,10 +250,70 @@ fun OcrStreamScreen(
 
     // 长按拖动松手：把起点到终点之间的所有块（按 readingOrder）合成一个区域
     fun commitDrag(ids: Set<String>) {
-        val picked = ordered.filter { it.id in ids }
+        val picked = ordered.filter { it.id in ids && edits[it.id]?.hidden != true }
         if (picked.isEmpty()) return
         selectedIds = picked.map { it.id }.toSet()
         copyBlocks(picked)
+    }
+
+    // ── 编辑操作：全部走 pushEdit，先把当前快照压进 history，再改。
+    // 撤销就是"弹回上一张快照"，不需要为每个操作写一对反向逻辑（那样很容易漏）。
+    fun pushEdit(next: Map<String, BlockEdit>) {
+        history = (history + edits).takeLast(30)   // 只留 30 步，防止无限增长
+        edits = next
+    }
+
+    fun nudge(block: OcrStreamBlock, dx: Int, dy: Int) {
+        val b = block.bbox
+        val page = data ?: return
+        if (b.size != 4) return
+        // 先算"这一步实际能走多远"，避免把框推出页面（推到边界后按同方向不再生效）
+        val sx = dx.coerceIn(-b[0], page.width - b[2])
+        val sy = dy.coerceIn(-b[1], page.height - b[3])
+        if (sx == 0 && sy == 0) {
+            hintText = "${block.id} 已经贴到页面边缘"
+            return
+        }
+        val moved = listOf(b[0] + sx, b[1] + sy, b[2] + sx, b[3] + sy)
+        val cur = edits[block.id] ?: BlockEdit()
+        pushEdit(edits + (block.id to cur.copy(bbox = moved)))
+        val dir = when {
+            sx > 0 -> "右移"
+            sx < 0 -> "左移"
+            sy > 0 -> "下移"
+            else -> "上移"
+        }
+        // 带上"相对模型原始框的累计位移"：数字每次都变，提示才会重新计时（同值不会刷新），
+        // 顺带让你知道累加多了需要往回收。
+        val totalX = moved[0] - b[0]
+        val totalY = moved[1] - b[1]
+        val acc = when {
+            totalY != 0 -> " 累计 ${totalX},${totalY}"
+            else -> " 累计 ${if (totalX > 0) "+" else ""}${totalX}px"
+        }
+        hintText = "${block.id} ${dir}${maxOf(abs(sx), abs(sy))}px$acc"
+    }
+
+    fun hideBlock(block: OcrStreamBlock) {
+        val cur = edits[block.id] ?: BlockEdit()
+        pushEdit(edits + (block.id to cur.copy(hidden = true)))
+        // 刻意不清 selectedIds：删完工具条要能就地显示"已删除 b0001"并给出撤销。
+        // 一删就跳回进度行的话，撤销按钮跑到别处，用户会以为删没了没法回头。
+        hintText = "已删除 ${block.id}，可撤销"
+    }
+
+    fun undoEdit() {
+        if (history.isEmpty()) return
+        edits = history.last()
+        history = history.dropLast(1)
+        hintText = "已撤销"
+    }
+
+    /** 一键回到模型原始输出。也走 pushEdit，所以"还原"本身还能被撤销回来 */
+    fun resetEdits() {
+        if (edits.isEmpty()) return
+        pushEdit(emptyMap())
+        hintText = "已还原为模型原始输出"
     }
 
     // 四色分配：纯计算，一次算好；不要写成在 DrawScope 里现算
@@ -257,19 +362,15 @@ fun OcrStreamScreen(
                     modifier = Modifier.fillMaxSize(),
                 )
 
-                // activeIndex 就是进度：它之前的块都已经"识别过"，所以已识别集合不用另存状态。
-                // 加一个 mutableList 记录"画过的框"等于两份数据要同步，迟早不一致。
-                val revealed = if (activeIndex >= 0) ordered.take(activeIndex + 1) else ordered
-
                 Canvas(
                     modifier = Modifier
                         .matchParentSize()
                         // 命中判断：屏幕坐标反算回原图坐标。Compose 不需要叠一层透明矩形
                         // （那是 View 的 hit-test 思路），直接算落在哪个 bbox 里就行。
-                        .pointerInput(scale, dx, dy, ordered) {
+                        .pointerInput(scale, dx, dy, blocksNow) {
                             // 单击 = 单选（再点同一块取消）；点空白也取消
                             detectTapGestures { pos ->
-                                val hit = hitAt(ordered, pos, dx, dy, scale)
+                                val hit = hitAt(blocksNow, pos, dx, dy, scale)
                                 if (hit == null) {
                                     selectedIds = emptySet()
                                 } else {
@@ -282,22 +383,22 @@ fun OcrStreamScreen(
                         // 长按 + 拖动 = 范围合并，松手才生效。
                         // 必须是独立的 pointerInput：一个 pointerInput 里只能 await 一种手势，
                         // 两个探测器塞一起会互相抢事件（表现为长按后单击也触发）。
-                        .pointerInput(scale, dx, dy, ordered) {
+                        .pointerInput(scale, dx, dy, blocksNow) {
                             detectDragGesturesAfterLongPress(
                                 onDragStart = { pos ->
-                                    val start = hitAt(ordered, pos, dx, dy, scale)
-                                    dragAnchor = start?.let { ordered.indexOf(it) }
+                                    val start = hitAt(blocksNow, pos, dx, dy, scale)
+                                    dragAnchor = start?.let { blocksNow.indexOf(it) }
                                     dragRange = start?.let { setOf(it.id) } ?: emptySet()
                                 },
                                 onDrag = { change, _ ->
                                     change.consume()
                                     val anchor = dragAnchor
-                                    val cur = hitAt(ordered, change.position, dx, dy, scale)
-                                        ?.let { ordered.indexOf(it) }
+                                    val cur = hitAt(blocksNow, change.position, dx, dy, scale)
+                                        ?.let { blocksNow.indexOf(it) }
                                     if (anchor != null && cur != null) {
                                         val a = minOf(anchor, cur)
                                         val b = maxOf(anchor, cur)
-                                        dragRange = ordered.subList(a, b + 1).map { it.id }.toSet()
+                                        dragRange = blocksNow.subList(a, b + 1).map { it.id }.toSet()
                                     }
                                 },
                                 onDragEnd = {
@@ -315,7 +416,7 @@ fun OcrStreamScreen(
                 ) {
                     // 合并框：选中 >= 2 个时取并集（左上取最小、右下取最大），画一个虚线大框
                     if (effectiveIds.size >= 2) {
-                        val picked = ordered.filter { it.id in effectiveIds && it.bbox.size == 4 }
+                        val picked = blocksNow.filter { it.id in effectiveIds && it.bbox.size == 4 }
                         if (picked.isNotEmpty()) {
                             val x1 = picked.minOf { it.bbox[0] }
                             val y1 = picked.minOf { it.bbox[1] }
@@ -368,22 +469,57 @@ fun OcrStreamScreen(
             }
         }
 
-        // ── 进度 + 重播
+        // ── 进度 / 编辑工具条 + 重播
+        // 三态：选中一个块 -> 块工具条；没选中但有改动 -> 撤销/还原；都没有 -> 原进度行。
+        // 有改动时必须常驻撤销入口，否则删完块点一下空白，工具条消失就再也回不来了。
+        val editing = ordered.firstOrNull { it.id in selectedIds }
         Row(
             modifier = Modifier
                 .fillMaxWidth()
                 .padding(horizontal = Space.lg, vertical = Space.xs),
             verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(Space.sm),
+            horizontalArrangement = Arrangement.spacedBy(Space.xs),
         ) {
-            val progress = if (activeIndex >= 0) "${activeIndex + 1}/${ordered.size}" else "完成"
-            Pill(text = progress, background = c.surfaceCard, color = c.muted)
-            if (activeBlock != null) {
-                Text(
-                    text = "${activeBlock.type} · ${activeBlock.id}",
-                    style = OcrType.Caption.copy(fontSize = 12.sp),
-                    color = c.mutedSoft,
-                )
+            when {
+                editing != null -> {
+                    // 为什么全是按钮而不是拖拽：单击/长按拖动已经被"单选/合并"占满，
+                    // 再塞一个"拖框边"必然抢事件；而 OCR 框的典型错误只是"整体偏几像素"，
+                    // 点两下箭头比拖着对准更快，也没有手指挡住目标的问题。
+                    val gone = edits[editing.id]?.hidden == true
+                    Text(
+                        text = if (gone) "${editing.id} 已删除" else editing.id,
+                        style = OcrType.Caption.copy(fontSize = 12.sp),
+                        color = if (gone) c.danger else c.muted,
+                    )
+                    NudgeKey("←", c.ink, c.surfaceCard, enabled = !gone) { nudge(editing, -NUDGE_STEP, 0) }
+                    NudgeKey("→", c.ink, c.surfaceCard, enabled = !gone) { nudge(editing, NUDGE_STEP, 0) }
+                    NudgeKey("↑", c.ink, c.surfaceCard, enabled = !gone) { nudge(editing, 0, -NUDGE_STEP) }
+                    NudgeKey("↓", c.ink, c.surfaceCard, enabled = !gone) { nudge(editing, 0, NUDGE_STEP) }
+                    if (!gone) ActionKey("删除", c.danger, c.surfaceCard) { hideBlock(editing) }
+                    ActionKey("撤销", c.muted, c.surfaceCard, enabled = history.isNotEmpty()) { undoEdit() }
+                }
+
+                edits.isNotEmpty() -> {
+                    Text(
+                        text = "已修改 ${edits.size} 处",
+                        style = OcrType.Caption.copy(fontSize = 12.sp),
+                        color = c.muted,
+                    )
+                    ActionKey("撤销", c.muted, c.surfaceCard, enabled = history.isNotEmpty()) { undoEdit() }
+                    ActionKey("还原", c.danger, c.surfaceCard) { resetEdits() }
+                }
+
+                else -> {
+                    val progress = if (activeIndex >= 0) "${activeIndex + 1}/${ordered.size}" else "完成"
+                    Pill(text = progress, background = c.surfaceCard, color = c.muted)
+                    if (activeBlock != null) {
+                        Text(
+                            text = "${activeBlock.type} · ${activeBlock.id}",
+                            style = OcrType.Caption.copy(fontSize = 12.sp),
+                            color = c.mutedSoft,
+                        )
+                    }
+                }
             }
             Spacer(Modifier.weight(1f))
             // 胶囊自绘：公共的 Pill 是只读展示组件，加 onClick 会牵动其它调用点
@@ -410,7 +546,9 @@ fun OcrStreamScreen(
                 markdown = shown,
                 // 选中某块时关掉自动滚底，否则每帧 setMarkdown 都把视线拽回底部
                 autoScrollBottom = effectiveIds.isEmpty(),
-                highlightBlockIds = ordered.filter { it.id in effectiveIds }.map { it.id },
+                highlightBlockIds = ordered
+                    .filter { it.id in effectiveIds && edits[it.id]?.hidden != true }
+                    .map { it.id },
                 onBlockTap = { id ->
                     Log.d("LinkDebug", "text tap -> $id")
                     ordered.firstOrNull { it.id == id }?.let { applySingle(it) }
@@ -447,6 +585,78 @@ fun OcrStreamScreen(
                     .padding(horizontal = Space.md, vertical = Space.xs),
             )
         }
+    }
+}
+
+/* ---------------------- 框编辑（叠加层，不改原数据） ---------------------- */
+
+/** 微调步长（原图像素）。这页是 1400×1812、行高约 30px，8px 点两下就能对齐一行 */
+private const val NUDGE_STEP = 8
+
+/**
+ * 一个区域的编辑记录。
+ *
+ * 关键：这不是"真值"，只是显示层的偏移。assets 里的 document.json 是模型输出，
+ * 框偏了属于模型错误本身，不该被界面悄悄改掉 —— 所以这里只记差异，不回写任何文件。
+ *
+ * 记差异而不是直接改 bbox 的三个好处：
+ *   - 撤销 = 弹回上一份快照，不用为每个操作写一对反向逻辑
+ *   - 重置 = edits 清空，原数据仍在
+ *   - 将来要导出"修正后结果"时，原始数据 + 差异 才是完整信息
+ */
+private data class BlockEdit(
+    val bbox: List<Int>? = null,
+    val hidden: Boolean = false,
+)
+
+/** 方向微调键：34dp 方块，点一次走一步 */
+@Composable
+private fun NudgeKey(
+    label: String,
+    fg: Color,
+    bg: Color,
+    enabled: Boolean = true,
+    onClick: () -> Unit,
+) {
+    Box(
+        modifier = Modifier
+            .size(34.dp)
+            .clip(RoundedCornerShape(10.dp))
+            .background(bg)
+            .clickable(enabled = enabled, onClick = onClick),
+        contentAlignment = Alignment.Center,
+    ) {
+        Text(
+            text = label,
+            style = OcrType.Caption.copy(fontSize = 15.sp),
+            color = if (enabled) fg else fg.copy(alpha = 0.30f),
+        )
+    }
+}
+
+/** 文字动作键：宽度跟着文字走，比方向键宽一点，避免"删除"被挤成两行 */
+@Composable
+private fun ActionKey(
+    label: String,
+    fg: Color,
+    bg: Color,
+    enabled: Boolean = true,
+    onClick: () -> Unit,
+) {
+    Box(
+        modifier = Modifier
+            .height(34.dp)
+            .clip(RoundedCornerShape(10.dp))
+            .background(bg)
+            .clickable(enabled = enabled, onClick = onClick)
+            .padding(horizontal = 10.dp),
+        contentAlignment = Alignment.Center,
+    ) {
+        Text(
+            text = label,
+            style = OcrType.Caption.copy(fontSize = 13.sp),
+            color = if (enabled) fg else fg.copy(alpha = 0.35f),
+        )
     }
 }
 
