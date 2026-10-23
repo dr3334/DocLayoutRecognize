@@ -2,6 +2,8 @@
 
 package com.doclayout.recognize.ui
 
+import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.foundation.clickable
 import androidx.compose.animation.core.animateDpAsState
@@ -265,11 +267,15 @@ fun OcrApp(
         // 用 BoxWithConstraints 是因为宽度要按 maxWidth 的 75% 算。
         BoxWithConstraints(Modifier.fillMaxSize().background(colors.canvas)) {
             val panelTarget = maxWidth * 0.75f
-            val panelW by animateDpAsState(
-                targetValue = if (settingsOpen) panelTarget else 0.dp,
+            // 动画只改 translationX（纯绘制变换），不改宽度。
+            // 改宽度的话每一帧都要重新 measure/layout 整个设置列表（30 个 SettingRow + Switch），
+            // 打开时会一顿一顿；平移只改图层，不触发测量。
+            val panelSlide by animateFloatAsState(
+                targetValue = if (settingsOpen) 1f else 0f,
                 animationSpec = tween(durationMillis = 260),
                 label = "settingsPanel",
             )
+            val panelOffsetPx = with(LocalDensity.current) { panelTarget.toPx() } * (1f - panelSlide)
             val scrimAlpha by animateFloatAsState(
                 targetValue = if (settingsOpen) 1f else 0f,
                 animationSpec = tween(durationMillis = 260),
@@ -315,18 +321,17 @@ fun OcrApp(
                 )
             }
 
-            if (settingsOpen || panelW > 0.dp) {
-                Box(
-                    modifier = Modifier
-                        .align(Alignment.CenterEnd)
-                        .width(panelW)
-                        .fillMaxHeight()
-                        .clipToBounds()
-                        .background(colors.canvas),
-                ) {
-                    // 宽度接近 0 时不挂内容：0 宽度的 Column 会被约束成极小值，
-                    // 里面的 weight/scroll 会算出一堆无意义的尺寸
-                    if (panelW > 1.dp) {
+            // 面板始终挂着（收起时只是平移到屏幕外）：否则第一次打开要现组合 30 个设置行，
+            // 会有一下明显的停顿；组合过一次之后就一直复用。
+            Box(
+                modifier = Modifier
+                    .align(Alignment.CenterEnd)
+                    .width(panelTarget)
+                    .fillMaxHeight()
+                    .graphicsLayer { translationX = panelOffsetPx }
+                    .clipToBounds()
+                    .background(colors.canvas),
+            ) {
                         OcrSettingsScreen(
                             dark = dark,
                             onDarkChange = { dark = it },
@@ -358,8 +363,6 @@ fun OcrApp(
                             onBack = { settingsOpen = false },
                             onExit = onExit,
                         )
-                    }
-                }
             }
         }
 
