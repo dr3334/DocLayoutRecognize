@@ -91,7 +91,10 @@ fun OcrStreamScreen(
     val c = Ocr.colors
     val context = LocalContext.current
     val data = remember(page) { page ?: OcrStreamDemo.load(context) }
-    val ordered = data?.ordered.orEmpty()
+    // ordered 每次访问都是新 List（getter 里 mapNotNull），必须 remember：
+    // 否则 pointerInput 的 key 每帧都变，手势会被不停重启（和 sheetDrag 那个坑同源），
+    // colorOf 的 remember(ordered) 也会失效、每次重组重算一遍。
+    val ordered = remember(data) { data?.ordered.orEmpty() }
 
     var playKey by remember { mutableIntStateOf(0) }
     var doneText by remember { mutableStateOf("") }
