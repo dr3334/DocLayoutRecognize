@@ -71,7 +71,7 @@ fun OcrMarkdownView(
             setBackgroundColor(Color.TRANSPARENT)
             overScrollMode = WebView.OVER_SCROLL_NEVER
             // 长按不要弹系统菜单：这里是只读结果页，选中反而挡住内容
-            setOnCreateContextMenuListener { _, _, _ -> }
+            // 长按要弹系统的「复制/全选」工具条（需求：文本框里能复制），所以不能吞掉 context menu；代价是长按图片会弹「保存图片」，可接受。
             // 用 rememberUpdatedState 兜住回调：WebView 是 remember 出来的，
             // 直接捕获 onBlockTap 会一直用第一次组合时的闭包（和 sheetDrag 同一个坑）
             addJavascriptInterface(

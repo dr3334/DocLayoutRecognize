@@ -14,13 +14,12 @@
     padding: 0 2px 8px 2px;
     -webkit-text-size-adjust: 100%;
     word-break: break-word;
-    /* 全局禁选。Chromium 的长按选词是在渲染进程内部自己判定的，
-     * Kotlin 侧的 setOnLongClickListener 根本拦不到；只有把 selectable 关掉，
-     * 才不会在长按 500ms 后弹出「复制/分享」系统工具条盖住我们的 Toast。
-     * 代价：正文段落也不能长按选中了。要恢复选取，把下面两行删掉即可。 */
-    -webkit-user-select: none;
-    user-select: none;
-    -webkit-touch-callout: none;
+    /* 正文允许长按选取并弹系统「复制/全选」工具条（需求：文本框里能复制）。
+     * 注意 .katex 仍然禁选 —— 公式有自己的长按复制 LaTeX（见下方 .katex 规则），
+     * 两者不冲突：长按公式时没有可选文本，系统工具条不会出现。 */
+    -webkit-user-select: text;
+    user-select: text;
+    -webkit-touch-callout: default;
   }
   h1 { font-size: 21px; margin: 4px 0 10px; line-height: 1.35; }
   h2 { font-size: 17px; margin: 18px 0 8px; color: #185fa5; }
