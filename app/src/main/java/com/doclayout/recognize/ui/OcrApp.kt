@@ -2,6 +2,11 @@
 
 package com.doclayout.recognize.ui
 
+import androidx.compose.animation.core.animateDpAsState
+import androidx.compose.animation.core.tween
+import androidx.compose.foundation.layout.BoxWithConstraints
+import androidx.compose.foundation.layout.fillMaxHeight
+import androidx.compose.ui.draw.clipToBounds
 import com.doclayout.recognize.ui.theme.LocalOcrColors
 import com.doclayout.recognize.data.local.OcrMode
 import com.doclayout.recognize.data.local.OcrSettingsStore
@@ -10,6 +15,7 @@ import com.doclayout.recognize.data.model.OcrRecord
 import com.doclayout.recognize.data.remote.OcrVlApi
 import com.doclayout.recognize.data.sample.sampleRecords
 import com.doclayout.recognize.ui.screen.OcrStreamScreen
+import com.doclayout.recognize.ui.screen.OcrSettingsScreen
 import com.doclayout.recognize.ui.screen.OcrSettingsContent
 import com.doclayout.recognize.ui.screen.OcrHomeScreen
 import com.doclayout.recognize.ui.screen.OcrResultScreen
@@ -28,11 +34,11 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.material3.AlertDialog
-import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -253,8 +259,17 @@ fun OcrApp(
     }
 
     CompositionLocalProvider(LocalOcrColors provides colors) {
-        Box(Modifier.fillMaxSize().background(colors.canvas)) {
-            when (route) {
+        // 面板宽度驱动一切：主界面右侧让出 panelW，面板贴右边长出来。
+        // 用 BoxWithConstraints 是因为宽度要按 maxWidth 的 75% 算。
+        BoxWithConstraints(Modifier.fillMaxSize().background(colors.canvas)) {
+            val panelTarget = maxWidth * 0.75f
+            val panelW by animateDpAsState(
+                targetValue = if (settingsOpen) panelTarget else 0.dp,
+                animationSpec = tween(durationMillis = 260),
+                label = "settingsPanel",
+            )
+            Box(Modifier.fillMaxSize().padding(end = panelW).clipToBounds()) {
+                when (route) {
                 OcrRoute.Stream -> OcrStreamScreen(onBack = { route = OcrRoute.Home })
 
                 OcrRoute.Home -> OcrHomeScreen(
@@ -275,50 +290,60 @@ fun OcrApp(
                     startOpen = startOpen || current.isReal,
                     startSplit = startSplit,
                 )
+                }
+            }
+
+            // ── 右侧设置面板
+            // 不是覆盖式抽屉，也不是贴底 sheet：主界面被压到左边 1/4，面板自己占 3/4。
+            // 宽度用 animateDpAsState 而不是 AnimatedVisibility：后者是整体淡入淡出，
+            // 拿不到"被逐渐拉开"的过程，主界面也不会跟着缩。
+            if (settingsOpen || panelW > 0.dp) {
+                Box(
+                    modifier = Modifier
+                        .align(Alignment.CenterEnd)
+                        .width(panelW)
+                        .fillMaxHeight()
+                        .clipToBounds()
+                        .background(colors.canvas),
+                ) {
+                    // 宽度接近 0 时不挂内容：0 宽度的 Column 会被约束成极小值，
+                    // 里面的 weight/scroll 会算出一堆无意义的尺寸
+                    if (panelW > 1.dp) {
+                        OcrSettingsScreen(
+                            dark = dark,
+                            onDarkChange = { dark = it },
+                            recordCount = scanned.size,
+                            mode = mode,
+                            baseUrl = baseUrl,
+                            model = model,
+                            credential = credential,
+                            onModeChange = { next ->
+                                // 切模式时，如果地址还是上一个模式的默认值，就跟着换成新模式的默认值；
+                                // 用户自己填过的地址（比如局域网 IP）不动
+                                val wasDefault = baseUrl == OcrSettingsStore.defaultBaseFor(mode)
+                                mode = next
+                                settings.mode = next
+                                if (wasDefault) {
+                                    val nextDefault = OcrSettingsStore.defaultBaseFor(next)
+                                    baseUrl = nextDefault
+                                    settings.baseUrl = nextDefault
+                                }
+                            },
+                            onBaseUrlChange = { baseUrl = it; settings.baseUrl = it },
+                            onCredentialChange = { credential = it; settings.credential = it },
+                            onClearRecords = {
+                                scope.launch {
+                                    store.clear()
+                                    scanned = emptyList()
+                                }
+                            },
+                            onBack = { settingsOpen = false },
+                            onExit = onExit,
+                        )
+                    }
+                }
             }
         }
-
-
-    // ── 设置抽屉
-    // 开关状态放在 OcrApp 顶层（settingsOpen），不放进 OcrRoute：
-    // 一个东西的"开/关"只能有一个真相源，两个开关迟早不同步。
-    if (settingsOpen) {
-        ModalBottomSheet(
-            onDismissRequest = { settingsOpen = false },
-            containerColor = colors.canvas,
-        ) {
-            OcrSettingsContent(
-                dark = dark,
-                onDarkChange = { dark = it },
-                recordCount = scanned.size,
-                mode = mode,
-                baseUrl = baseUrl,
-                model = model,
-                credential = credential,
-                onModeChange = { next ->
-                    // 切模式时，如果地址还是上一个模式的默认值，就跟着换成新模式的默认值；
-                    // 用户自己填过的地址（比如局域网 IP）不动
-                    val wasDefault = baseUrl == OcrSettingsStore.defaultBaseFor(mode)
-                    mode = next
-                    settings.mode = next
-                    if (wasDefault) {
-                        val nextDefault = OcrSettingsStore.defaultBaseFor(next)
-                        baseUrl = nextDefault
-                        settings.baseUrl = nextDefault
-                    }
-                },
-                onBaseUrlChange = { baseUrl = it; settings.baseUrl = it },
-                onCredentialChange = { credential = it; settings.credential = it },
-                onClearRecords = {
-                    scope.launch {
-                        store.clear()
-                        scanned = emptyList()
-                    }
-                },
-                onExit = onExit,
-            )
-        }
-    }
 
         ScanOverlay(
             state = scanState,
