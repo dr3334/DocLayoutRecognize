@@ -54,8 +54,8 @@ fun OcrMarkdownView(
     textColor: Int = Color.parseColor("#1a1a1a"),
     /** streaming: scroll to bottom after each update */
     autoScrollBottom: Boolean = false,
-    /** 当前选中的区域 id；非 null 时 WebView 把对应块高亮并滚到中间 */
-    highlightBlockId: String? = null,
+    /** 当前选中的区域 id 列表；非空时 WebView 把对应块高亮并滚到第一个 */
+    highlightBlockIds: List<String> = emptyList(),
     /** 点中正文里的某个区域时回调（参数是区域 id，如 b0005） */
     onBlockTap: (String) -> Unit = {},
 ) {
@@ -107,10 +107,10 @@ fun OcrMarkdownView(
 
     // 高亮：id 变了就更新。流式期间 setMarkdown 每帧会重建块，
     // JS 侧的 applyHighlight() 会在 setMarkdown 末尾把 class 补回来。
-    LaunchedEffect(highlightBlockId, ready) {
+    LaunchedEffect(highlightBlockIds, ready) {
         if (ready) {
             webView.evaluateJavascript(
-                "highlightBlock(${JSONObject.quote(highlightBlockId ?: "")})",
+                "highlightBlocks(${JSONObject.quote(highlightBlockIds.joinToString(","))})",
                 null,
             )
         }

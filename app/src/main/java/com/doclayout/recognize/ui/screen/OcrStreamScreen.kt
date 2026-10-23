@@ -55,6 +55,8 @@ import com.doclayout.recognize.ui.theme.OcrType
 import com.doclayout.recognize.ui.theme.Radii
 import com.doclayout.recognize.ui.theme.Space
 import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.ui.graphics.PathEffect
+import androidx.compose.ui.graphics.drawscope.Fill
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.input.pointer.pointerInput
 import com.doclayout.recognize.data.model.OcrStreamBlock
@@ -115,14 +117,14 @@ fun OcrStreamScreen(
     var typing by remember { mutableStateOf("") }
     var activeIndex by remember { mutableIntStateOf(-1) }
 
-    // 上下联动：当前选中的区域 id（点原图框或点正文都会改它）
-    var selectedId by remember { mutableStateOf<String?>(null) }
+    // 上下联动 + 区域合并：选中的是一组 id。连续点几个块 = 多选，原图按并集画一个大框
+    var selectedIds by remember { mutableStateOf<Set<String>>(emptySet()) }
 
     LaunchedEffect(playKey, data) {
         doneText = ""
         typing = ""
         activeIndex = -1
-        selectedId = null
+        selectedIds = emptySet()
         if (data == null) return@LaunchedEffect
 
         var acc = ""
@@ -172,24 +174,30 @@ fun OcrStreamScreen(
     }
 
     fun applySelection(block: OcrStreamBlock) {
-        val next = if (selectedId == block.id) null else block.id
-        selectedId = next
-        if (next == null) return
-        if (block.isImage) {
-            hintText = "该区域是图片，没有可复制的文本"
+        // 点一次加入选中集，再点移除 —— "连续点几个块"自然就是多选/合并
+        val next = if (block.id in selectedIds) selectedIds - block.id else selectedIds + block.id
+        selectedIds = next
+        if (next.isEmpty()) return
+
+        // 按阅读顺序取，复制出来的顺序才和视觉一致
+        val picked = ordered.filter { it.id in next }
+        val text = picked.filterNot { it.isImage }
+            .joinToString("\n\n") { OcrStreamDemo.toMarkdown(it).trim() }
+            .trim()
+        if (text.isEmpty()) {
+            hintText = "选中的 ${picked.size} 个区域都是图片，没有可复制的文本"
             return
         }
-        val content = OcrStreamDemo.toMarkdown(block).trim()
-        if (content.isEmpty()) {
-            hintText = "该区域没有可复制的文本"
-            return
+        clipboard.setText(AnnotatedString(text))
+        hintText = if (picked.size == 1) {
+            "已复制 ${picked[0].id} · ${text.length} 字"
+        } else {
+            "已合并 ${picked.size} 个区域 · ${text.length} 字"
         }
-        clipboard.setText(AnnotatedString(content))
-        hintText = "已复制 ${block.id} · ${content.length} 字"
     }
 
-// 四色分配：纯计算，一次算好；不要写成在 DrawScope 里现算
-val colorOf = remember(ordered) { assignBlockColors(ordered) }
+    // 四色分配：纯计算，一次算好；不要写成在 DrawScope 里现算
+    val colorOf = remember(ordered) { assignBlockColors(ordered) }
 
     Box(Modifier.fillMaxSize()) {
     Column(Modifier.fillMaxSize().safeDrawingPadding()) {
@@ -256,11 +264,34 @@ val colorOf = remember(ordered) { assignBlockColors(ordered) }
                             }
                         },
                 ) {
+                    // 合并框：选中 >= 2 个时取并集（左上取最小、右下取最大），画一个虚线大框
+                    if (selectedIds.size >= 2) {
+                        val picked = ordered.filter { it.id in selectedIds && it.bbox.size == 4 }
+                        if (picked.isNotEmpty()) {
+                            val x1 = picked.minOf { it.bbox[0] }
+                            val y1 = picked.minOf { it.bbox[1] }
+                            val x2 = picked.maxOf { it.bbox[2] }
+                            val y2 = picked.maxOf { it.bbox[3] }
+                            val tl = Offset(dx + x1 * scale, dy + y1 * scale)
+                            val sz = Size((x2 - x1) * scale, (y2 - y1) * scale)
+                            drawRect(color = c.primary.copy(alpha = 0.10f), topLeft = tl, size = sz, style = Fill)
+                            drawRect(
+                                color = c.primary,
+                                topLeft = tl,
+                                size = sz,
+                                style = Stroke(
+                                    width = 2f.dp.toPx(),
+                                    pathEffect = PathEffect.dashPathEffect(floatArrayOf(14f, 10f)),
+                                ),
+                            )
+                        }
+                    }
+
                     revealed.forEach { block ->
                         val b = block.bbox
                         if (b.size != 4) return@forEach
                         val isCurrent = block.id == activeBlock?.id
-                        val isSelected = block.id == selectedId
+                        val isSelected = block.id in selectedIds
                         drawRect(
                             // 已识别的用低透明度 + 细线：29 个框全用不透明 2dp 会把原图糊满
                             color = (colorOf[block.id] ?: c.primary)
@@ -329,8 +360,8 @@ val colorOf = remember(ordered) { assignBlockColors(ordered) }
             OcrMarkdownView(
                 markdown = shown,
                 // 选中某块时关掉自动滚底，否则每帧 setMarkdown 都把视线拽回底部
-                autoScrollBottom = selectedId == null,
-                highlightBlockId = selectedId,
+                autoScrollBottom = selectedIds.isEmpty(),
+                highlightBlockIds = ordered.filter { it.id in selectedIds }.map { it.id },
                 onBlockTap = { id ->
                     Log.d("LinkDebug", "text tap -> $id")
                     ordered.firstOrNull { it.id == id }?.let { applySelection(it) }

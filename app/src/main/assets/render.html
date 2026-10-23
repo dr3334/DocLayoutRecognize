@@ -55,6 +55,7 @@
      分数线、根号、括号都用 currentColor，只设 .katex 一处即可整块跟随。 */
   .katex { color: #CC785C; }
   /* 绾靛悜鑱斿姩鐨勫尯鍩熼珮浜細宸︾珫绾?+ 娣″簳锛屼笉鐢ㄨ竟妗嗭紙閬垮厤鎺ㄦ尋甯冨眬锛?*/
+  /* 鐩搁偦鍧楀悓鏃堕€変腑鏃堕潬 box-shadow 鎶婂潡闂磋窛濉帀锛岃瑙変笂杩炴垚涓€鐗囷紙鍚堝苟鍖哄煙锛?*/
   [data-blk].blk-hit {
     background: rgba(204, 120, 92, 0.10);
     box-shadow: inset 3px 0 0 #CC785C;
@@ -508,26 +509,34 @@ function reportHeight() {
 }
 
 /* ---------------- 上下联动：区域高亮 + 点击回传 ---------------- */
-var curHighlight = '';
+/* 多区域高亮：curHighlight 是 id 数组（合并区域时一次会有多个） */
+var curHighlight = [];
 
 function applyHighlight() {
   var hit = document.querySelectorAll('.blk-hit');
   for (var i = 0; i < hit.length; i++) hit[i].classList.remove('blk-hit');
-  if (!curHighlight) return;
-  var els = document.querySelectorAll('[data-blk="' + curHighlight + '"]');
-  for (var j = 0; j < els.length; j++) els[j].classList.add('blk-hit');
+  if (!curHighlight.length) return;
+  for (var k = 0; k < curHighlight.length; k++) {
+    var els = document.querySelectorAll('[data-blk="' + curHighlight[k] + '"]');
+    for (var j = 0; j < els.length; j++) els[j].classList.add('blk-hit');
+  }
 }
 
-/* 由 Kotlin 调：highlightBlock('b0005') / highlightBlock('') */
-function highlightBlock(id) {
-  curHighlight = id || '';
+/* 由 Kotlin 调：highlightBlocks('b0001,b0002')，空串表示清空。
+ * 传入顺序就是阅读顺序，滚动只滚到第一个。 */
+function highlightBlocks(csv) {
+  curHighlight = csv ? String(csv).split(',') : [];
   applyHighlight();
-  if (!curHighlight) return;
-  var first = document.querySelector('[data-blk="' + curHighlight + '"]');
+  if (!curHighlight.length) return;
+  var first = document.querySelector('[data-blk="' + curHighlight[0] + '"]');
   if (first && first.scrollIntoView) {
     first.scrollIntoView({ block: 'center', behavior: 'smooth' });
   }
 }
+window.highlightBlocks = highlightBlocks;
+
+/* 兼容单区域调用 */
+function highlightBlock(id) { highlightBlocks(id || ''); }
 window.highlightBlock = highlightBlock;
 
 /* 点文本 → 回传区域 id 给 Kotlin。事件委托挂在 root 上：
