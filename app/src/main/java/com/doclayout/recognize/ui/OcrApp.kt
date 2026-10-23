@@ -2,6 +2,8 @@
 
 package com.doclayout.recognize.ui
 
+import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.foundation.clickable
 import androidx.compose.animation.core.animateDpAsState
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.layout.BoxWithConstraints
@@ -268,7 +270,12 @@ fun OcrApp(
                 animationSpec = tween(durationMillis = 260),
                 label = "settingsPanel",
             )
-            Box(Modifier.fillMaxSize().padding(end = panelW).clipToBounds()) {
+            val scrimAlpha by animateFloatAsState(
+                targetValue = if (settingsOpen) 1f else 0f,
+                animationSpec = tween(durationMillis = 260),
+                label = "settingsScrim",
+            )
+            Box(Modifier.fillMaxSize()) {
                 when (route) {
                 OcrRoute.Stream -> OcrStreamScreen(onBack = { route = OcrRoute.Home })
 
@@ -297,6 +304,17 @@ fun OcrApp(
             // 不是覆盖式抽屉，也不是贴底 sheet：主界面被压到左边 1/4，面板自己占 3/4。
             // 宽度用 animateDpAsState 而不是 AnimatedVisibility：后者是整体淡入淡出，
             // 拿不到"被逐渐拉开"的过程，主界面也不会跟着缩。
+            // 主界面保持原比例，只盖一层暗色 —— 面板是"覆盖"，不是"挤压"。
+            // 点暗处关闭，手感和 ModalBottomSheet 的 scrim 一致。
+            if (scrimAlpha > 0f) {
+                Box(
+                    Modifier
+                        .fillMaxSize()
+                        .background(colors.scrim.copy(alpha = 0.30f * scrimAlpha))
+                        .clickable { settingsOpen = false },
+                )
+            }
+
             if (settingsOpen || panelW > 0.dp) {
                 Box(
                     modifier = Modifier
