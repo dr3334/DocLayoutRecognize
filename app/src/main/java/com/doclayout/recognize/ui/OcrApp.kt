@@ -1,3 +1,5 @@
+@file:OptIn(androidx.compose.material3.ExperimentalMaterial3Api::class)
+
 package com.doclayout.recognize.ui
 
 import com.doclayout.recognize.ui.theme.LocalOcrColors
@@ -8,9 +10,9 @@ import com.doclayout.recognize.data.model.OcrRecord
 import com.doclayout.recognize.data.remote.OcrVlApi
 import com.doclayout.recognize.data.sample.sampleRecords
 import com.doclayout.recognize.ui.screen.OcrStreamScreen
+import com.doclayout.recognize.ui.screen.OcrSettingsContent
 import com.doclayout.recognize.ui.screen.OcrHomeScreen
 import com.doclayout.recognize.ui.screen.OcrResultScreen
-import com.doclayout.recognize.ui.screen.OcrSettingsScreen
 import com.doclayout.recognize.ui.theme.Ocr
 import com.doclayout.recognize.ui.theme.OcrColors
 import com.doclayout.recognize.ui.theme.OcrType
@@ -30,6 +32,7 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -64,7 +67,7 @@ import java.io.File
  * 没有用 Navigation 库：页面只有三个，而且状态要共享，一个 enum + when 更好读。
  */
 
-private enum class OcrRoute { Home, Settings, Result, Stream }
+private enum class OcrRoute { Home, Result, Stream }
 
 /** 一次扫描的整体状态。UI 只认这三个，不关心底下有多少张图 */
 private sealed interface ScanState {
@@ -110,7 +113,6 @@ fun OcrApp(
     var route by rememberSaveable {
         mutableStateOf(
             when (startRoute) {
-                1 -> OcrRoute.Settings
                 2 -> OcrRoute.Result
                 3 -> OcrRoute.Stream
                 else -> OcrRoute.Home
@@ -118,6 +120,9 @@ fun OcrApp(
         )
     }
     var dark by rememberSaveable { mutableStateOf(startDark) }
+    // 设置从"页面"变成"浮层"：没有 OcrRoute.Settings 了，只有一个开关。
+    // 用 rememberSaveable 而不是 remember —— 抽屉开着转屏，它还应该开着。
+    var settingsOpen by rememberSaveable { mutableStateOf(startRoute == 1) }
     // 真实记录列表：从 filesDir 读，扫描成功后整体重读一遍（页数很少，不做增量）
     var scanned by remember { mutableStateOf<List<OcrRecord>>(emptyList()) }
     var currentIndex by rememberSaveable {
@@ -254,7 +259,7 @@ fun OcrApp(
 
                 OcrRoute.Home -> OcrHomeScreen(
                     records = records,
-                    onOpenSettings = { route = OcrRoute.Settings },
+                    onOpenSettings = { settingsOpen = true },
                     onOpenStream = { route = OcrRoute.Stream },
                     onCapture = ::launchCamera,
                     onImport = ::launchPicker,
@@ -262,38 +267,6 @@ fun OcrApp(
                         currentIndex = records.indexOf(record).coerceAtLeast(0)
                         route = OcrRoute.Result
                     },
-                )
-
-                OcrRoute.Settings -> OcrSettingsScreen(
-                    dark = dark,
-                    onDarkChange = { dark = it },
-                    recordCount = scanned.size,
-                    mode = mode,
-                    baseUrl = baseUrl,
-                    model = model,
-                    credential = credential,
-                    onModeChange = { next ->
-                        // 切模式时，如果地址还是上一个模式的默认值，就跟着换成新模式的默认值；
-                        // 用户自己填过的地址（比如局域网 IP）不动
-                        val wasDefault = baseUrl == OcrSettingsStore.defaultBaseFor(mode)
-                        mode = next
-                        settings.mode = next
-                        if (wasDefault) {
-                            val nextDefault = OcrSettingsStore.defaultBaseFor(next)
-                            baseUrl = nextDefault
-                            settings.baseUrl = nextDefault
-                        }
-                    },
-                    onBaseUrlChange = { baseUrl = it; settings.baseUrl = it },
-                    onCredentialChange = { credential = it; settings.credential = it },
-                    onClearRecords = {
-                        scope.launch {
-                            store.clear()
-                            scanned = emptyList()
-                        }
-                    },
-                    onBack = { route = OcrRoute.Home },
-                    onExit = onExit,
                 )
 
                 OcrRoute.Result -> OcrResultScreen(
@@ -305,12 +278,54 @@ fun OcrApp(
             }
         }
 
+
+    // ── 设置抽屉
+    // 开关状态放在 OcrApp 顶层（settingsOpen），不放进 OcrRoute：
+    // 一个东西的"开/关"只能有一个真相源，两个开关迟早不同步。
+    if (settingsOpen) {
+        ModalBottomSheet(
+            onDismissRequest = { settingsOpen = false },
+            containerColor = colors.canvas,
+        ) {
+            OcrSettingsContent(
+                dark = dark,
+                onDarkChange = { dark = it },
+                recordCount = scanned.size,
+                mode = mode,
+                baseUrl = baseUrl,
+                model = model,
+                credential = credential,
+                onModeChange = { next ->
+                    // 切模式时，如果地址还是上一个模式的默认值，就跟着换成新模式的默认值；
+                    // 用户自己填过的地址（比如局域网 IP）不动
+                    val wasDefault = baseUrl == OcrSettingsStore.defaultBaseFor(mode)
+                    mode = next
+                    settings.mode = next
+                    if (wasDefault) {
+                        val nextDefault = OcrSettingsStore.defaultBaseFor(next)
+                        baseUrl = nextDefault
+                        settings.baseUrl = nextDefault
+                    }
+                },
+                onBaseUrlChange = { baseUrl = it; settings.baseUrl = it },
+                onCredentialChange = { credential = it; settings.credential = it },
+                onClearRecords = {
+                    scope.launch {
+                        store.clear()
+                        scanned = emptyList()
+                    }
+                },
+                onExit = onExit,
+            )
+        }
+    }
+
         ScanOverlay(
             state = scanState,
             onDismiss = { scanState = ScanState.Idle },
             onOpenSettings = {
                 scanState = ScanState.Idle
-                route = OcrRoute.Settings
+                settingsOpen = true
             },
         )
 
@@ -339,8 +354,9 @@ fun OcrApp(
 
         // 系统返回键：结果→首页→退出演示
         BackHandler {
-            when (route) {
-                OcrRoute.Home -> onExit()
+            when {
+                settingsOpen -> settingsOpen = false
+                route == OcrRoute.Home -> onExit()
                 else -> route = OcrRoute.Home
             }
         }

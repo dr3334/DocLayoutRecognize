@@ -39,7 +39,10 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 
 /**
- * 设置页。
+ * 设置页的「整页形态」：顶栏 + 内容。
+ *
+ * 现在 App 里的入口是抽屉（见 OcrApp 的 ModalBottomSheet），这个整页形态保留着，
+ * 因为 adb 调试参数（--ei ocr 1）和以后可能的平板分栏还要用它。
  *
  * 一个设置页最容易做丑的地方是"每行都一样重"。这里的办法是三层字重：
  *   小节标签（12sp / 弱化色 / 加宽字距）→ 行标题（14sp 墨色）→ 行值（13sp 弱化色）。
@@ -59,6 +62,56 @@ fun OcrSettingsScreen(
     onCredentialChange: (String) -> Unit,
     onClearRecords: () -> Unit,
     onBack: () -> Unit,
+    onExit: () -> Unit,
+) {
+    Column(
+        modifier = Modifier
+            .fillMaxSize()
+            .safeDrawingPadding(),
+    ) {
+        OcrTopBar(title = "设置", onBack = onBack)
+        OcrSettingsContent(
+            modifier = Modifier.weight(1f),
+            dark = dark,
+            onDarkChange = onDarkChange,
+            recordCount = recordCount,
+            mode = mode,
+            baseUrl = baseUrl,
+            model = model,
+            credential = credential,
+            onModeChange = onModeChange,
+            onBaseUrlChange = onBaseUrlChange,
+            onCredentialChange = onCredentialChange,
+            onClearRecords = onClearRecords,
+            onExit = onExit,
+        )
+    }
+}
+
+/**
+ * 设置项本体。
+ *
+ * 和上面那个整页版本的区别只有三点，缺一不可：
+ *   1. 没有 [OcrTopBar] —— 顶栏属于"容器"，抽屉有自己的把手
+ *   2. 不调 safeDrawingPadding() —— 抽屉已经让开过系统栏，再让一次就双倍留白
+ *   3. 不写 fillMaxSize() —— 高度交给容器决定（整页时是 weight，抽屉时按内容算）
+ *
+ * 抽出来的意义：设置项只有一份，页面和抽屉共用，不会出现"某天改了一边忘另一边"。
+ */
+@Composable
+fun OcrSettingsContent(
+    modifier: Modifier = Modifier,
+    dark: Boolean,
+    onDarkChange: (Boolean) -> Unit,
+    recordCount: Int,
+    mode: OcrMode,
+    baseUrl: String,
+    model: String,
+    credential: String,
+    onModeChange: (OcrMode) -> Unit,
+    onBaseUrlChange: (String) -> Unit,
+    onCredentialChange: (String) -> Unit,
+    onClearRecords: () -> Unit,
     onExit: () -> Unit,
 ) {
     val c = Ocr.colors
@@ -87,127 +140,119 @@ fun OcrSettingsScreen(
         else -> Unit
     }
 
-    Column(
-        modifier = Modifier
-            .fillMaxSize()
-            .safeDrawingPadding(),
-    ) {
-        OcrTopBar(title = "设置", onBack = onBack)
+    Box(modifier.fillMaxWidth(), contentAlignment = Alignment.TopCenter) {
+        Column(
+            modifier = Modifier
+                .widthIn(max = Space.contentMax)
+                .fillMaxWidth()
+                .verticalScroll(rememberScrollState())
+                .padding(horizontal = Space.lg)
+                .padding(bottom = Space.xl),
+        ) {
+            // ── 识别服务：这两项决定"扫描"能不能真的跑起来
+            SectionLabel("识别服务")
+            SettingCard {
+                SettingRow(
+                    label = "接口模式",
+                    value = mode.label,
+                    onClick = {
+                        onModeChange(if (mode == OcrMode.Cloud) OcrMode.Local else OcrMode.Cloud)
+                    },
+                )
+                RowDivider()
+                SettingRow(
+                    label = "服务地址",
+                    value = baseUrl.removePrefix("https://").removePrefix("http://"),
+                    onClick = { editing = "url" },
+                )
+                if (mode == OcrMode.Cloud) {
+                    RowDivider()
+                    SettingRow(label = "模型", value = model)
+                }
+                RowDivider()
+                SettingRow(
+                    label = "Access Token",
+                    value = if (credential.isBlank()) "未配置" else maskToken(credential),
+                    onClick = { editing = "token" },
+                )
+                RowDivider()
+                SettingRow(
+                    label = "服务状态",
+                    value = if (mode == OcrMode.Cloud) {
+                        if (credential.isNotBlank()) "已配置" else "缺 Token"
+                    } else {
+                        "本地直连（可留空 Token）"
+                    },
+                )
+            }
 
-        Box(Modifier.fillMaxWidth().weight(1f), contentAlignment = Alignment.TopCenter) {
-            Column(
-                modifier = Modifier
-                    .widthIn(max = Space.contentMax)
-                    .fillMaxWidth()
-                    .verticalScroll(rememberScrollState())
-                    .padding(horizontal = Space.lg)
-                    .padding(bottom = Space.xl),
+            // ── 识别
+            SectionLabel("识别")
+            SettingCard {
+                SettingRow(label = "识别引擎", value = "PaddleOCR-VL 1.6（云端）", onClick = {})
+                RowDivider()
+                SettingRow(label = "输出格式", value = "Markdown + LaTeX", onClick = {})
+                RowDivider()
+                SettingRow(label = "公式渲染", value = "WebView + KaTeX", onClick = {})
+                RowDivider()
+                SwitchRow(label = "自动裁边与透视校正", checked = true, onCheckedChange = {})
+                RowDivider()
+                SwitchRow(label = "去除手写笔迹", checked = false, onCheckedChange = {})
+            }
+
+            // ── 外观
+            SectionLabel("外观")
+            SettingCard {
+                SwitchRow(
+                    label = "深色外观",
+                    hint = "深色也会保留奶油底，不用纯黑",
+                    checked = dark,
+                    onCheckedChange = onDarkChange,
+                )
+                RowDivider()
+                SettingRow(label = "界面字号", value = "标准", onClick = {})
+                RowDivider()
+                SettingRow(label = "图片压缩", value = "长边 2048 px", onClick = {})
+            }
+
+            // ── 数据
+            SectionLabel("数据")
+            SettingCard {
+                SettingRow(label = "识别记录", value = "$recordCount 条")
+                RowDivider()
+                SettingRow(
+                    label = if (recordCount == 0) "清空识别记录" else "清空识别记录",
+                    onClick = onClearRecords,
+                    danger = true,
+                )
+                RowDivider()
+                SettingRow(label = "缓存占用", value = "128 MB", onClick = {})
+            }
+
+            // ── 关于
+            SectionLabel("关于")
+            SettingCard {
+                SettingRow(label = "版本", value = "1.0.0")
+                RowDivider()
+                SettingRow(label = "设计风格", value = "Claude · design-md", onClick = {})
+                RowDivider()
+                SettingRow(label = "开源许可", value = "MIT", onClick = {})
+            }
+
+            Spacer(Modifier.height(Space.lg))
+            Row(
+                modifier = Modifier.fillMaxWidth().clickable(onClick = onExit).padding(vertical = 10.dp),
+                horizontalArrangement = Arrangement.Center,
             ) {
-                // ── 识别服务：这两项决定"扫描"能不能真的跑起来
-                SectionLabel("识别服务")
-                SettingCard {
-                    SettingRow(
-                        label = "接口模式",
-                        value = mode.label,
-                        onClick = {
-                            onModeChange(if (mode == OcrMode.Cloud) OcrMode.Local else OcrMode.Cloud)
-                        },
-                    )
-                    RowDivider()
-                    SettingRow(
-                        label = "服务地址",
-                        value = baseUrl.removePrefix("https://").removePrefix("http://"),
-                        onClick = { editing = "url" },
-                    )
-                    if (mode == OcrMode.Cloud) {
-                        RowDivider()
-                        SettingRow(label = "模型", value = model)
-                    }
-                    RowDivider()
-                    SettingRow(
-                        label = "Access Token",
-                        value = if (credential.isBlank()) "未配置" else maskToken(credential),
-                        onClick = { editing = "token" },
-                    )
-                    RowDivider()
-                    SettingRow(
-                        label = "服务状态",
-                        value = if (mode == OcrMode.Cloud) {
-                            if (credential.isNotBlank()) "已配置" else "缺 Token"
-                        } else {
-                            "本地直连（可留空 Token）"
-                        },
-                    )
-                }
-
-                // ── 识别
-                SectionLabel("识别")
-                SettingCard {
-                    SettingRow(label = "识别引擎", value = "PaddleOCR-VL 1.6（云端）", onClick = {})
-                    RowDivider()
-                    SettingRow(label = "输出格式", value = "Markdown + LaTeX", onClick = {})
-                    RowDivider()
-                    SettingRow(label = "公式渲染", value = "WebView + KaTeX", onClick = {})
-                    RowDivider()
-                    SwitchRow(label = "自动裁边与透视校正", checked = true, onCheckedChange = {})
-                    RowDivider()
-                    SwitchRow(label = "去除手写笔迹", checked = false, onCheckedChange = {})
-                }
-
-                // ── 外观
-                SectionLabel("外观")
-                SettingCard {
-                    SwitchRow(
-                        label = "深色外观",
-                        hint = "深色也会保留奶油底，不用纯黑",
-                        checked = dark,
-                        onCheckedChange = onDarkChange,
-                    )
-                    RowDivider()
-                    SettingRow(label = "界面字号", value = "标准", onClick = {})
-                    RowDivider()
-                    SettingRow(label = "图片压缩", value = "长边 2048 px", onClick = {})
-                }
-
-                // ── 数据
-                SectionLabel("数据")
-                SettingCard {
-                    SettingRow(label = "识别记录", value = "$recordCount 条")
-                    RowDivider()
-                    SettingRow(
-                        label = if (recordCount == 0) "清空识别记录" else "清空识别记录",
-                        onClick = onClearRecords,
-                        danger = true,
-                    )
-                    RowDivider()
-                    SettingRow(label = "缓存占用", value = "128 MB", onClick = {})
-                }
-
-                // ── 关于
-                SectionLabel("关于")
-                SettingCard {
-                    SettingRow(label = "版本", value = "1.0.0")
-                    RowDivider()
-                    SettingRow(label = "设计风格", value = "Claude · design-md", onClick = {})
-                    RowDivider()
-                    SettingRow(label = "开源许可", value = "MIT", onClick = {})
-                }
-
-                Spacer(Modifier.height(Space.lg))
-                Row(
-                    modifier = Modifier.fillMaxWidth().clickable(onClick = onExit).padding(vertical = 10.dp),
-                    horizontalArrangement = Arrangement.Center,
-                ) {
-                    Text(text = "退出演示 · 返回课程列表", style = OcrType.Caption, color = c.primary)
-                }
-                Spacer(Modifier.height(4.dp))
-                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.Center) {
-                    Text(
-                        text = "OCR Layout · Jetpack Compose 教学示例",
-                        style = OcrType.Caption.copy(fontSize = 12.sp),
-                        color = c.mutedSoft,
-                    )
-                }
+                Text(text = "退出演示 · 返回课程列表", style = OcrType.Caption, color = c.primary)
+            }
+            Spacer(Modifier.height(4.dp))
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.Center) {
+                Text(
+                    text = "OCR Layout · Jetpack Compose 教学示例",
+                    style = OcrType.Caption.copy(fontSize = 12.sp),
+                    color = c.mutedSoft,
+                )
             }
         }
     }
