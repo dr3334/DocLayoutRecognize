@@ -15,7 +15,8 @@ import org.json.JSONObject
  */
 object OcrStreamDemo {
 
-    private const val DOC = "stream/document.json"
+    /** JSON 路径。导出顺序修正时会写进 source 字段，指明改的是哪份数据 */
+    const val DOCUMENT = "stream/document.json"
 
     /** 原图（给页面上半部分定位用）。jpg 是因为整页扫描图转 png 会到 1.2MB，jpg 只要 375KB */
     const val SOURCE_IMAGE = "stream/source.jpg"
@@ -24,7 +25,7 @@ object OcrStreamDemo {
     private const val CROP_PREFIX = "stream/"
 
     fun load(context: Context): OcrStreamPage? = runCatching {
-        val text = context.assets.open(DOC).bufferedReader(Charsets.UTF_8).use { it.readText() }
+        val text = context.assets.open(DOCUMENT).bufferedReader(Charsets.UTF_8).use { it.readText() }
         parse(text)
     }.getOrNull()
 

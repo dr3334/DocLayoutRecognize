@@ -26,6 +26,8 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -46,7 +48,11 @@ import androidx.compose.animation.slideInVertically
 import androidx.compose.animation.slideOutVertically
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.text.AnnotatedString
+import androidx.compose.ui.text.TextStyle
+import androidx.compose.ui.text.drawText
+import androidx.compose.ui.text.rememberTextMeasurer
 import com.doclayout.recognize.data.local.OcrStreamDemo
+import com.doclayout.recognize.data.local.OcrStreamExport
 import com.doclayout.recognize.data.model.OcrStreamPage
 import com.doclayout.recognize.ui.component.OcrTopBar
 import com.doclayout.recognize.ui.component.Pill
@@ -63,7 +69,8 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.input.pointer.pointerInput
 import com.doclayout.recognize.data.model.OcrStreamBlock
 import kotlinx.coroutines.delay
-import kotlin.math.abs
+import kotlinx.coroutines.isActive
+import kotlinx.coroutines.launch
 import kotlin.math.min
 
 /*
@@ -115,6 +122,29 @@ fun OcrStreamScreen(
     // colorOf 的 remember(ordered) 也会失效、每次重组重算一遍。
     val ordered = remember(data) { data?.ordered.orEmpty() }
 
+    // ── 顺序修正：模型最容易出错的地方（reading_order 会把某一段排到别处）
+    // customOrder = null 表示没动过，用模型给的顺序；否则是调整后的 id 序列。
+    //
+    // 注意：**只改顺序，不碰框**。框的位置、大小、数量全部保持模型原样 ——
+    // 框偏了是模型自身的问题，属于事实，界面不该悄悄"修好"它，只把它当定位提示用。
+    var customOrder by remember { mutableStateOf<List<String>?>(null) }
+    // 撤销栈：每次调序前压一份快照（上限 30）。撤销 = 弹回上一张，不用写反向操作。
+    var history by remember { mutableStateOf<List<List<String>?>>(emptyList()) }
+    // 按住连发期间为 true：整串只压一个撤销点（否则按住 3 秒要按 30 次撤销）
+    var holding by remember { mutableStateOf(false) }
+
+    // 当前生效的序列。所有下游统一从这里取：播放、正文、复制、合并高亮。
+    // 只有这一处排序逻辑，不会出现"正文是新序、复制还是旧序"。
+    val blocksNow = remember(ordered, customOrder) {
+        val ids = customOrder
+        if (ids == null) {
+            ordered
+        } else {
+            val byId = ordered.associateBy { it.id }
+            ids.mapNotNull { byId[it] }
+        }
+    }
+
     var playKey by remember { mutableIntStateOf(0) }
     var doneText by remember { mutableStateOf("") }
     var typing by remember { mutableStateOf("") }
@@ -122,13 +152,6 @@ fun OcrStreamScreen(
 
     // 上下联动 + 区域合并：选中的是一组 id。连续点几个块 = 多选，原图按并集画一个大框
     var selectedIds by remember { mutableStateOf<Set<String>>(emptySet()) }
-
-    // ── 框编辑（方案 B：全部按钮操作，不新增任何手势）
-    // 编辑是"叠加层"，原数据一个字都不改：assets 里的 document.json 是模型的原始输出，
-    // 框偏移本身是模型的错误，属于"事实"。这里的移动/删除只用于你自己对齐查看，
-    // 不回写文件、不传回识别流程，重播即还原。所以撤销 = 弹 history 一格，重置 = edits 清空。
-    var edits by remember { mutableStateOf<Map<String, BlockEdit>>(emptyMap()) }
-    var history by remember { mutableStateOf<List<Map<String, BlockEdit>>>(emptyList()) }
     // 长按拖动时的临时范围（空 = 没在拖）。拖动中用它做预览，松手才提交
     var dragAnchor by remember { mutableStateOf<Int?>(null) }
     var dragRange by remember { mutableStateOf<Set<String>>(emptySet()) }
@@ -138,13 +161,12 @@ fun OcrStreamScreen(
         typing = ""
         activeIndex = -1
         selectedIds = emptySet()
-        // 重播 = 回到模型原始输出的样子，编辑一并丢弃
-        edits = emptyMap()
-        history = emptyList()
+        // 重播 = 用当前顺序重放一遍。**不清空 customOrder**：那是刚调好的东西，
+        // 点个重播就丢了会挨骂。要回模型原序，按工具条上的「还原」。
         if (data == null) return@LaunchedEffect
 
         var acc = ""
-        ordered.forEachIndexed { idx, block ->
+        blocksNow.forEachIndexed { idx, block ->
             activeIndex = idx
             val md = OcrStreamDemo.toMarkdown(block)
             if (block.isImage) {
@@ -179,37 +201,22 @@ fun OcrStreamScreen(
         else -> "$doneText\n\n@@blk:@@\n$typing"
     }
 
-    // 编辑态的正文：只在 edits 或原始数据变化时重建一次（29 块 toMarkdown 不便宜）。
-    // 用 null 表示"没编辑过"，让 shown 回落到流式态 —— 这样没用编辑的人行为完全不变。
-    val editedMarkdown = remember(ordered, edits) {
-        if (edits.isEmpty()) {
+    // 调过顺序后正文必须重建：逐字累积的 doneText 是按旧顺序拼的，改不了。
+    // null 表示没调过，shown 回落到流式态 —— 没动过顺序的人行为完全不变。
+    val reorderedMarkdown = remember(blocksNow, customOrder) {
+        if (customOrder == null) {
             null
         } else {
-            // 删掉的块必须从正文里消失，而逐字累积的 doneText 改不了，只能重建带锚点的全文
-            ordered.filterNot { edits[it.id]?.hidden == true }
-                .joinToString("\n\n") { "@@blk:${it.id}@@\n${OcrStreamDemo.toMarkdown(it)}" }
+            blocksNow.joinToString("\n\n") { "@@blk:${it.id}@@\n${OcrStreamDemo.toMarkdown(it)}" }
         }
     }
-    val shown = editedMarkdown ?: streamed
-    val activeBlock = ordered.getOrNull(activeIndex)
-
-    // 一个块在"当前视图"里长什么样：隐藏的返回 null，移动过的返回换了 bbox 的副本。
-    // 只影响绘制与命中，四色仍按原始 ordered 算 —— 框挪一下不应该让整页重新配色。
-    fun viewOf(b: OcrStreamBlock): OcrStreamBlock? {
-        val e = edits[b.id] ?: return b
-        if (e.hidden) return null
-        return e.bbox?.let { b.copy(bbox = it) } ?: b
-    }
-
-    // 命中判断要用"当前视图"的 bbox：框挪过之后，点在旧位置不应该还命中它。
-    // 必须 remember —— 每次重组新建 List 会让 pointerInput 的 key 每帧变化、手势被反复重启。
-    val blocksNow = remember(ordered, edits) { ordered.mapNotNull { viewOf(it) } }
+    val shown = reorderedMarkdown ?: streamed
+    val activeBlock = blocksNow.getOrNull(activeIndex)
 
     // activeIndex 就是进度：它之前的块都已经"识别过"，已识别集合不用另存状态
     // （加一个 mutableList 记录"画过的框"等于两份数据要同步，迟早不一致）。
-    val revealed = remember(ordered, activeIndex, edits) {
-        (if (activeIndex >= 0) ordered.take(activeIndex + 1) else ordered)
-            .mapNotNull { viewOf(it) }
+    val revealed = remember(blocksNow, activeIndex) {
+        if (activeIndex >= 0) blocksNow.take(activeIndex + 1) else blocksNow
     }
 
     // 选中区域 = 复制它的内容并给一条轻提示；再点同一块取消选中（不复制）
@@ -248,72 +255,67 @@ fun OcrStreamScreen(
         copyBlocks(listOf(block))
     }
 
-    // 长按拖动松手：把起点到终点之间的所有块（按 readingOrder）合成一个区域
+    // 长按拖动松手：把起点到终点之间的所有块合成一个区域（按当前生效的顺序取区间）
     fun commitDrag(ids: Set<String>) {
-        val picked = ordered.filter { it.id in ids && edits[it.id]?.hidden != true }
+        val picked = blocksNow.filter { it.id in ids }
         if (picked.isEmpty()) return
         selectedIds = picked.map { it.id }.toSet()
         copyBlocks(picked)
     }
 
-    // ── 编辑操作：全部走 pushEdit，先把当前快照压进 history，再改。
-    // 撤销就是"弹回上一张快照"，不需要为每个操作写一对反向逻辑（那样很容易漏）。
-    fun pushEdit(next: Map<String, BlockEdit>) {
-        history = (history + edits).takeLast(30)   // 只留 30 步，防止无限增长
-        edits = next
+    // ── 调序操作。统一"先压快照再改"，撤销就是弹回，不用为每个操作写反向逻辑
+    fun pushOrder(next: List<String>) {
+        // holding 期间（按住连发）不重复压栈：整串连续移动只留一个撤销点
+        if (!holding) history = (history + customOrder).takeLast(30)
+        customOrder = next
     }
 
-    fun nudge(block: OcrStreamBlock, dx: Int, dy: Int) {
-        val b = block.bbox
-        val page = data ?: return
-        if (b.size != 4) return
-        // 先算"这一步实际能走多远"，避免把框推出页面（推到边界后按同方向不再生效）
-        val sx = dx.coerceIn(-b[0], page.width - b[2])
-        val sy = dy.coerceIn(-b[1], page.height - b[3])
-        if (sx == 0 && sy == 0) {
-            hintText = "${block.id} 已经贴到页面边缘"
+    fun moveBlock(block: OcrStreamBlock, delta: Int) {
+        val ids = blocksNow.map { it.id }.toMutableList()
+        val from = ids.indexOf(block.id)
+        if (from < 0) return
+        val to = (from + delta).coerceIn(0, ids.size - 1)
+        if (to == from) {
+            hintText = if (delta < 0) "${block.id} 已经在最前面" else "${block.id} 已经在最后面"
             return
         }
-        val moved = listOf(b[0] + sx, b[1] + sy, b[2] + sx, b[3] + sy)
-        val cur = edits[block.id] ?: BlockEdit()
-        pushEdit(edits + (block.id to cur.copy(bbox = moved)))
-        val dir = when {
-            sx > 0 -> "右移"
-            sx < 0 -> "左移"
-            sy > 0 -> "下移"
-            else -> "上移"
-        }
-        // 带上"相对模型原始框的累计位移"：数字每次都变，提示才会重新计时（同值不会刷新），
-        // 顺带让你知道累加多了需要往回收。
-        val totalX = moved[0] - b[0]
-        val totalY = moved[1] - b[1]
-        val acc = when {
-            totalY != 0 -> " 累计 ${totalX},${totalY}"
-            else -> " 累计 ${if (totalX > 0) "+" else ""}${totalX}px"
-        }
-        hintText = "${block.id} ${dir}${maxOf(abs(sx), abs(sy))}px$acc"
+        ids.removeAt(from)
+        ids.add(to, block.id)
+        pushOrder(ids)
+        hintText = "${block.id} 移到第 ${to + 1}/${ids.size} 位"
     }
 
-    fun hideBlock(block: OcrStreamBlock) {
-        val cur = edits[block.id] ?: BlockEdit()
-        pushEdit(edits + (block.id to cur.copy(hidden = true)))
-        // 刻意不清 selectedIds：删完工具条要能就地显示"已删除 b0001"并给出撤销。
-        // 一删就跳回进度行的话，撤销按钮跑到别处，用户会以为删没了没法回头。
-        hintText = "已删除 ${block.id}，可撤销"
-    }
-
-    fun undoEdit() {
+    fun undoOrder() {
         if (history.isEmpty()) return
-        edits = history.last()
+        customOrder = history.last()
         history = history.dropLast(1)
-        hintText = "已撤销"
+        hintText = "已撤销调序"
     }
 
-    /** 一键回到模型原始输出。也走 pushEdit，所以"还原"本身还能被撤销回来 */
-    fun resetEdits() {
-        if (edits.isEmpty()) return
-        pushEdit(emptyMap())
-        hintText = "已还原为模型原始输出"
+    fun resetOrder() {
+        if (customOrder == null) return
+        history = (history + customOrder).takeLast(30)
+        customOrder = null
+        hintText = "已还原为模型原始顺序"
+    }
+
+    /**
+     * 导出修正后的顺序：json（原序 + 新序对比）+ md（按新序拼好的全文），
+     * 落到应用私有目录，同时把全文复制到剪贴板。
+     * 写文件的具体逻辑在 data 层（OcrStreamExport），这里只负责提示。
+     */
+    fun exportOrder() {
+        val page = data ?: return
+        if (customOrder == null) {
+            hintText = "顺序没改过，不用导出"
+            return
+        }
+        runCatching { OcrStreamExport.saveOrder(context, page, ordered, blocksNow) }
+            .onSuccess { r ->
+                clipboard.setText(AnnotatedString(r.markdown))
+                hintText = "已导出 ${r.jsonName} · 复制 ${r.markdown.length} 字"
+            }
+            .onFailure { hintText = "导出失败：${it.message}" }
     }
 
     // 四色分配：纯计算，一次算好；不要写成在 DrawScope 里现算
@@ -346,6 +348,8 @@ fun OcrStreamScreen(
                     context.assets.open(OcrStreamDemo.SOURCE_IMAGE).use { BitmapFactory.decodeStream(it) }
                 }.getOrNull()
             }
+            // 序号测量器：只在 SHOW_BLOCK_INDEX 打开时才会被调用，默认不影响性能
+            val indexMeasurer = rememberTextMeasurer()
 
             if (bitmap != null && data != null) {
                 // ContentScale.Fit 的等效换算：取小的那个比例，再居中留边
@@ -457,6 +461,28 @@ fun OcrStreamScreen(
                                 else -> 1f
                             }.dp.toPx()),
                         )
+
+                        // 序号：默认不画（SHOW_BLOCK_INDEX = false）。
+                        // 只有需要"正文第几段对应原图哪个框"时才打开，避免小框被数字糊满。
+                        if (SHOW_BLOCK_INDEX) {
+                            val order = blocksNow.indexOfFirst { it.id == block.id } + 1
+                            if (order > 0) {
+                                val layout = indexMeasurer.measure(
+                                    text = order.toString(),
+                                    style = TextStyle(
+                                        color = colorOf[block.id] ?: c.primary,
+                                        fontSize = 9.sp,
+                                    ),
+                                )
+                                drawText(
+                                    textLayoutResult = layout,
+                                    topLeft = Offset(
+                                        dx + b[0] * scale + 3f,
+                                        (dy + b[1] * scale - layout.size.height).coerceAtLeast(0f),
+                                    ),
+                                )
+                            }
+                        }
                     }
                 }
             } else {
@@ -469,10 +495,10 @@ fun OcrStreamScreen(
             }
         }
 
-        // ── 进度 / 编辑工具条 + 重播
-        // 三态：选中一个块 -> 块工具条；没选中但有改动 -> 撤销/还原；都没有 -> 原进度行。
-        // 有改动时必须常驻撤销入口，否则删完块点一下空白，工具条消失就再也回不来了。
-        val editing = ordered.firstOrNull { it.id in selectedIds }
+        // ── 进度 / 调序工具条 + 重播
+        // 三态：选中一段 -> 调序工具条；没选中但改过顺序 -> 撤销/还原/导出；都没有 -> 原进度行。
+        // 改过顺序就必须常驻撤销入口，否则点一下空白工具条消失，再也回不到原顺序。
+        val editing = blocksNow.firstOrNull { it.id in selectedIds }
         Row(
             modifier = Modifier
                 .fillMaxWidth()
@@ -482,35 +508,50 @@ fun OcrStreamScreen(
         ) {
             when {
                 editing != null -> {
-                    // 为什么全是按钮而不是拖拽：单击/长按拖动已经被"单选/合并"占满，
-                    // 再塞一个"拖框边"必然抢事件；而 OCR 框的典型错误只是"整体偏几像素"，
-                    // 点两下箭头比拖着对准更快，也没有手指挡住目标的问题。
-                    val gone = edits[editing.id]?.hidden == true
+                    // 这里只改"这段排第几"，不动它的框。
+                    // 用按钮而不是拖拽：下方正文在 WebView 里，拖动排序要穿透 JS 层；
+                    // 而且上移/下移是离散操作，按钮不会误触，按住还能连发。
                     Text(
-                        text = if (gone) "${editing.id} 已删除" else editing.id,
-                        style = OcrType.Caption.copy(fontSize = 12.sp),
-                        color = if (gone) c.danger else c.muted,
-                    )
-                    NudgeKey("←", c.ink, c.surfaceCard, enabled = !gone) { nudge(editing, -NUDGE_STEP, 0) }
-                    NudgeKey("→", c.ink, c.surfaceCard, enabled = !gone) { nudge(editing, NUDGE_STEP, 0) }
-                    NudgeKey("↑", c.ink, c.surfaceCard, enabled = !gone) { nudge(editing, 0, -NUDGE_STEP) }
-                    NudgeKey("↓", c.ink, c.surfaceCard, enabled = !gone) { nudge(editing, 0, NUDGE_STEP) }
-                    if (!gone) ActionKey("删除", c.danger, c.surfaceCard) { hideBlock(editing) }
-                    ActionKey("撤销", c.muted, c.surfaceCard, enabled = history.isNotEmpty()) { undoEdit() }
-                }
-
-                edits.isNotEmpty() -> {
-                    Text(
-                        text = "已修改 ${edits.size} 处",
+                        text = "${editing.id} ${blocksNow.indexOfFirst { it.id == editing.id } + 1}/${blocksNow.size}",
                         style = OcrType.Caption.copy(fontSize = 12.sp),
                         color = c.muted,
                     )
-                    ActionKey("撤销", c.muted, c.surfaceCard, enabled = history.isNotEmpty()) { undoEdit() }
-                    ActionKey("还原", c.danger, c.surfaceCard) { resetEdits() }
+                    HoldKey(
+                        label = "↑",
+                        fg = c.ink,
+                        bg = c.surfaceCard,
+                        onStep = { moveBlock(editing, -1) },
+                        onPressChange = { holding = it },
+                    )
+                    HoldKey(
+                        label = "↓",
+                        fg = c.ink,
+                        bg = c.surfaceCard,
+                        onStep = { moveBlock(editing, 1) },
+                        onPressChange = { holding = it },
+                    )
+                    ActionKey("撤销", c.muted, c.surfaceCard, enabled = history.isNotEmpty()) { undoOrder() }
+                    ActionKey(
+                        "导出",
+                        c.primary,
+                        c.primary.copy(alpha = 0.12f),
+                        enabled = customOrder != null,
+                    ) { exportOrder() }
+                }
+
+                customOrder != null -> {
+                    Text(
+                        text = "顺序已调整",
+                        style = OcrType.Caption.copy(fontSize = 12.sp),
+                        color = c.muted,
+                    )
+                    ActionKey("撤销", c.muted, c.surfaceCard, enabled = history.isNotEmpty()) { undoOrder() }
+                    ActionKey("还原", c.danger, c.surfaceCard) { resetOrder() }
+                    ActionKey("导出", c.primary, c.primary.copy(alpha = 0.12f)) { exportOrder() }
                 }
 
                 else -> {
-                    val progress = if (activeIndex >= 0) "${activeIndex + 1}/${ordered.size}" else "完成"
+                    val progress = if (activeIndex >= 0) "${activeIndex + 1}/${blocksNow.size}" else "完成"
                     Pill(text = progress, background = c.surfaceCard, color = c.muted)
                     if (activeBlock != null) {
                         Text(
@@ -546,12 +587,10 @@ fun OcrStreamScreen(
                 markdown = shown,
                 // 选中某块时关掉自动滚底，否则每帧 setMarkdown 都把视线拽回底部
                 autoScrollBottom = effectiveIds.isEmpty(),
-                highlightBlockIds = ordered
-                    .filter { it.id in effectiveIds && edits[it.id]?.hidden != true }
-                    .map { it.id },
+                highlightBlockIds = blocksNow.filter { it.id in effectiveIds }.map { it.id },
                 onBlockTap = { id ->
                     Log.d("LinkDebug", "text tap -> $id")
-                    ordered.firstOrNull { it.id == id }?.let { applySingle(it) }
+                    blocksNow.firstOrNull { it.id == id }?.let { applySingle(it) }
                 },
                 modifier = Modifier.fillMaxSize().padding(Space.sm),
             )
@@ -588,42 +627,69 @@ fun OcrStreamScreen(
     }
 }
 
-/* ---------------------- 框编辑（叠加层，不改原数据） ---------------------- */
-
-/** 微调步长（原图像素）。这页是 1400×1812、行高约 30px，8px 点两下就能对齐一行 */
-private const val NUDGE_STEP = 8
+/* ---------------------- 调序工具条的小按键 ---------------------- */
 
 /**
- * 一个区域的编辑记录。
+ * 是否在区域框左上角画序号（1、2、3…）。
  *
- * 关键：这不是"真值"，只是显示层的偏移。assets 里的 document.json 是模型输出，
- * 框偏了属于模型错误本身，不该被界面悄悄改掉 —— 所以这里只记差异，不回写任何文件。
- *
- * 记差异而不是直接改 bbox 的三个好处：
- *   - 撤销 = 弹回上一份快照，不用为每个操作写一对反向逻辑
- *   - 重置 = edits 清空，原数据仍在
- *   - 将来要导出"修正后结果"时，原始数据 + 差异 才是完整信息
+ * **默认关闭**。这一页要看的是"文字顺序对不对"，序号会把本来就小的框糊满；
+ * 只有在需要确认"正文第 3 段对应原图哪个框"、或者调顺序调花眼时，改成 true 重新编译即可。
  */
-private data class BlockEdit(
-    val bbox: List<Int>? = null,
-    val hidden: Boolean = false,
-)
+private const val SHOW_BLOCK_INDEX = false
 
-/** 方向微调键：34dp 方块，点一次走一步 */
+/**
+ * 按住可以连发的按键：点一下走一步，按住 400ms 后每 90ms 自动走一步，松手即停。
+ *
+ * 用 pointerInput + detectTapGestures(onPress) 而不是 combinedClickable：
+ * onPress 是 suspend 块，能精确拿到"按下 / 松开"两端，长按阈值也能自己定。
+ *
+ * 两个必须注意的点：
+ *   1. 回调要用 rememberUpdatedState 兜住 —— pointerInput(Unit) 不会因重组重启，
+ *      直接捕获 onStep 会永远执行第一次组合时的旧闭包（里面全是旧状态）
+ *   2. onPressChange(true) 必须排在第一次 onStep **之后**，否则第一步就不压撤销快照，
+ *      按住连发一百步之后一步都撤不回来
+ */
 @Composable
-private fun NudgeKey(
+private fun HoldKey(
     label: String,
     fg: Color,
     bg: Color,
     enabled: Boolean = true,
-    onClick: () -> Unit,
+    onStep: () -> Unit,
+    onPressChange: (Boolean) -> Unit = {},
 ) {
+    val scope = rememberCoroutineScope()
+    val step by rememberUpdatedState(onStep)
+    val canRun by rememberUpdatedState(enabled)
+    val pressChange by rememberUpdatedState(onPressChange)
+
     Box(
         modifier = Modifier
             .size(34.dp)
             .clip(RoundedCornerShape(10.dp))
             .background(bg)
-            .clickable(enabled = enabled, onClick = onClick),
+            .pointerInput(Unit) {
+                detectTapGestures(
+                    onPress = {
+                        if (canRun) {
+                            step()
+                            pressChange(true)
+                            val repeat = scope.launch {
+                                delay(400)          // 先留出"只想点一下"的余量
+                                while (isActive) {
+                                    step()
+                                    delay(90)
+                                }
+                            }
+                            tryAwaitRelease()
+                            repeat.cancel()
+                            pressChange(false)
+                        } else {
+                            tryAwaitRelease()
+                        }
+                    },
+                )
+            },
         contentAlignment = Alignment.Center,
     ) {
         Text(
@@ -634,7 +700,7 @@ private fun NudgeKey(
     }
 }
 
-/** 文字动作键：宽度跟着文字走，比方向键宽一点，避免"删除"被挤成两行 */
+/** 文字动作键：宽度跟着文字走，比方向键宽一点，避免中文被挤成两行 */
 @Composable
 private fun ActionKey(
     label: String,
