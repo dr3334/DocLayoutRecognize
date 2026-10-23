@@ -49,6 +49,25 @@ import com.doclayout.recognize.ui.theme.Space
 import kotlinx.coroutines.delay
 import kotlin.math.min
 
+/*
+ * ─────────────────────────────────────────────────────────────
+ * 学习导读
+ *
+ * 这个文件用不到 200 行讲清"流式渲染"的全部机制：
+ *   1. 数据是区域级（OcrStreamPage），不是整篇 markdown
+ *   2. 循环里只做一件事：让 typing 这个 String 变长
+ *   3. 界面自己跟着变（声明式），全程没有一处"刷新"调用
+ *
+ * 两个刻意的取舍：
+ *   - 文本每 3 个字符刷一次（cut += 3），不是每字符：每次变化都要跨进程
+ *     evaluateJavascript 一次，逐字符是 80+ 次/秒，WebView 会掉帧
+ *   - 图片块整块出现，不逐字：半截的 ![](stream/assets/p00 只会闪一下纯文本
+ *
+ * 公式能"边打边渲"靠的是 render.html 里的 balance()，不是这里的代码。
+ * 配套阅读：LEARNING.md 第二节「公式怎么能边打边渲染」
+ * ─────────────────────────────────────────────────────────────
+ */
+
 /**
  * 区域级流式渲染演示。
  *
