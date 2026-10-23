@@ -38,6 +38,13 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.slideInVertically
+import androidx.compose.animation.slideOutVertically
+import androidx.compose.ui.platform.LocalClipboardManager
+import androidx.compose.ui.text.AnnotatedString
 import com.doclayout.recognize.data.local.OcrStreamDemo
 import com.doclayout.recognize.data.model.OcrStreamPage
 import com.doclayout.recognize.ui.component.OcrTopBar
@@ -154,9 +161,37 @@ fun OcrStreamScreen(
     }
     val activeBlock = ordered.getOrNull(activeIndex)
 
+    // 选中区域 = 复制它的内容并给一条轻提示；再点同一块取消选中（不复制）
+    val clipboard = LocalClipboardManager.current
+    var hintText by remember { mutableStateOf<String?>(null) }
+    LaunchedEffect(hintText) {
+        if (hintText != null) {
+            delay(1600)
+            hintText = null
+        }
+    }
+
+    fun applySelection(block: OcrStreamBlock) {
+        val next = if (selectedId == block.id) null else block.id
+        selectedId = next
+        if (next == null) return
+        if (block.isImage) {
+            hintText = "该区域是图片，没有可复制的文本"
+            return
+        }
+        val content = OcrStreamDemo.toMarkdown(block).trim()
+        if (content.isEmpty()) {
+            hintText = "该区域没有可复制的文本"
+            return
+        }
+        clipboard.setText(AnnotatedString(content))
+        hintText = "已复制 ${block.id} · ${content.length} 字"
+    }
+
 // 四色分配：纯计算，一次算好；不要写成在 DrawScope 里现算
 val colorOf = remember(ordered) { assignBlockColors(ordered) }
 
+    Box(Modifier.fillMaxSize()) {
     Column(Modifier.fillMaxSize().safeDrawingPadding()) {
         OcrTopBar(
             title = "流式渲染",
@@ -214,9 +249,8 @@ val colorOf = remember(ordered) { assignBlockColors(ordered) }
                                         ix >= b.bbox[0] && ix <= b.bbox[2] &&
                                         iy >= b.bbox[1] && iy <= b.bbox[3]
                                 }?.let { tapped ->
-                                    // 再点同一块 = 取消选中
-                                    selectedId = if (selectedId == tapped.id) null else tapped.id
                                     Log.d("LinkDebug", "image tap -> ${tapped.id}")
+                                    applySelection(tapped)
                                     onBlockClick(tapped)
                                 }
                             }
@@ -297,7 +331,10 @@ val colorOf = remember(ordered) { assignBlockColors(ordered) }
                 // 选中某块时关掉自动滚底，否则每帧 setMarkdown 都把视线拽回底部
                 autoScrollBottom = selectedId == null,
                 highlightBlockId = selectedId,
-                onBlockTap = { id -> Log.d("LinkDebug", "text tap -> $id"); selectedId = id },
+                onBlockTap = { id ->
+                    Log.d("LinkDebug", "text tap -> $id")
+                    ordered.firstOrNull { it.id == id }?.let { applySelection(it) }
+                },
                 modifier = Modifier.fillMaxSize().padding(Space.sm),
             )
             if (shown.isEmpty()) {
@@ -311,6 +348,25 @@ val colorOf = remember(ordered) { assignBlockColors(ordered) }
         }
 
         Spacer(Modifier.height(Space.sm))
+    }
+
+        // 复制提示：轻量浮条，1.6s 自动消失。用自绘而不用系统 Toast：
+        // Toast 在部分 ROM 上会被限流，而且样式脱离这套设计语言。
+        AnimatedVisibility(
+            visible = hintText != null,
+            modifier = Modifier.align(Alignment.BottomCenter).padding(bottom = Space.xl),
+            enter = fadeIn() + slideInVertically { it / 3 },
+            exit = fadeOut() + slideOutVertically { it / 3 },
+        ) {
+            Text(
+                text = hintText.orEmpty(),
+                style = OcrType.Caption,
+                color = c.canvas,
+                modifier = Modifier
+                    .background(c.ink.copy(alpha = 0.92f), RoundedCornerShape(999.dp))
+                    .padding(horizontal = Space.md, vertical = Space.xs),
+            )
+        }
     }
 }
 

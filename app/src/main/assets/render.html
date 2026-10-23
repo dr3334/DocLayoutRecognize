@@ -14,12 +14,12 @@
     padding: 0 2px 8px 2px;
     -webkit-text-size-adjust: 100%;
     word-break: break-word;
-    /* 正文允许长按选取并弹系统「复制/全选」工具条（需求：文本框里能复制）。
-     * 注意 .katex 仍然禁选 —— 公式有自己的长按复制 LaTeX（见下方 .katex 规则），
-     * 两者不冲突：长按公式时没有可选文本，系统工具条不会出现。 */
-    -webkit-user-select: text;
-    user-select: text;
-    -webkit-touch-callout: default;
+    /* 禁选。复制改成了"点区域即复制该区域内容"（见 OcrStreamScreen.applySelection），
+     * 不需要网页内手动选词；放开 selectable 会额外冒出系统选词工具条，和底部提示条打架。
+     * 长按公式仍然走自己的 LaTeX 复制（见下方 .katex 规则）。 */
+    -webkit-user-select: none;
+    user-select: none;
+    -webkit-touch-callout: none;
   }
   h1 { font-size: 21px; margin: 4px 0 10px; line-height: 1.35; }
   h2 { font-size: 17px; margin: 18px 0 8px; color: #185fa5; }
