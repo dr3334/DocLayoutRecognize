@@ -46,6 +46,10 @@ import com.doclayout.recognize.ui.theme.Ocr
 import com.doclayout.recognize.ui.theme.OcrType
 import com.doclayout.recognize.ui.theme.Radii
 import com.doclayout.recognize.ui.theme.Space
+import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.input.pointer.pointerInput
+import com.doclayout.recognize.data.model.OcrStreamBlock
 import kotlinx.coroutines.delay
 import kotlin.math.min
 
@@ -87,6 +91,8 @@ fun OcrStreamScreen(
     onBack: () -> Unit,
     /** 允许外部注入（测试/换数据源）；为 null 时读内置 assets 样本 */
     page: OcrStreamPage? = null,
+    /** 点中某个区域时回调；默认空实现，所以现有调用点不用改 */
+    onBlockClick: (OcrStreamBlock) -> Unit = {},
 ) {
     val c = Ocr.colors
     val context = LocalContext.current
@@ -101,10 +107,14 @@ fun OcrStreamScreen(
     var typing by remember { mutableStateOf("") }
     var activeIndex by remember { mutableIntStateOf(-1) }
 
+    // 上下联动：当前选中的区域 id（点原图框或点正文都会改它）
+    var selectedId by remember { mutableStateOf<String?>(null) }
+
     LaunchedEffect(playKey, data) {
         doneText = ""
         typing = ""
         activeIndex = -1
+        selectedId = null
         if (data == null) return@LaunchedEffect
 
         var acc = ""
@@ -126,7 +136,9 @@ fun OcrStreamScreen(
                 typing = md
                 delay(140)
             }
-            acc = if (acc.isEmpty()) md else "$acc\n\n$md"
+            // 已完成区域带锚点；正在打字的那个不带，否则标记会被逐字打出来
+            val tagged = "@@blk:${block.id}@@\n$md"
+            acc = if (acc.isEmpty()) tagged else "$acc\n\n$tagged"
             doneText = acc
             typing = ""
         }
@@ -136,9 +148,13 @@ fun OcrStreamScreen(
     val shown = when {
         typing.isEmpty() -> doneText
         doneText.isEmpty() -> typing
-        else -> "$doneText\n\n$typing"
+        // 空锚点把"正在打字"这段从上一个区域里隔离出来，点它不会命中错区域
+        else -> "$doneText\n\n@@blk:@@\n$typing"
     }
     val activeBlock = ordered.getOrNull(activeIndex)
+
+// 四色分配：纯计算，一次算好；不要写成在 DrawScope 里现算
+val colorOf = remember(ordered) { assignBlockColors(ordered) }
 
     Column(Modifier.fillMaxSize().safeDrawingPadding()) {
         OcrTopBar(
@@ -179,16 +195,50 @@ fun OcrStreamScreen(
                     modifier = Modifier.fillMaxSize(),
                 )
 
-                val bbox = activeBlock?.bbox
-                if (bbox != null && bbox.size == 4) {
-                    Canvas(Modifier.matchParentSize()) {
-                        val w = (bbox[2] - bbox[0]) * scale
-                        val h = (bbox[3] - bbox[1]) * scale
+                // activeIndex 就是进度：它之前的块都已经"识别过"，所以已识别集合不用另存状态。
+                // 加一个 mutableList 记录"画过的框"等于两份数据要同步，迟早不一致。
+                val revealed = if (activeIndex >= 0) ordered.take(activeIndex + 1) else ordered
+
+                Canvas(
+                    modifier = Modifier
+                        .matchParentSize()
+                        // 命中判断：屏幕坐标反算回原图坐标。Compose 不需要叠一层透明矩形
+                        // （那是 View 的 hit-test 思路），直接算落在哪个 bbox 里就行。
+                        .pointerInput(scale, dx, dy, ordered) {
+                            detectTapGestures { pos ->
+                                val ix = (pos.x - dx) / scale
+                                val iy = (pos.y - dy) / scale
+                                ordered.firstOrNull { b ->
+                                    b.bbox.size == 4 &&
+                                        ix >= b.bbox[0] && ix <= b.bbox[2] &&
+                                        iy >= b.bbox[1] && iy <= b.bbox[3]
+                                }?.let { tapped ->
+                                    // 再点同一块 = 取消选中
+                                    selectedId = if (selectedId == tapped.id) null else tapped.id
+                                    onBlockClick(tapped)
+                                }
+                            }
+                        },
+                ) {
+                    revealed.forEach { block ->
+                        val b = block.bbox
+                        if (b.size != 4) return@forEach
+                        val isCurrent = block.id == activeBlock?.id
+                        val isSelected = block.id == selectedId
                         drawRect(
-                            color = c.primary,
-                            topLeft = Offset(dx + bbox[0] * scale, dy + bbox[1] * scale),
-                            size = Size(w.coerceAtLeast(1f), h.coerceAtLeast(1f)),
-                            style = Stroke(width = 2.dp.toPx()),
+                            // 已识别的用低透明度 + 细线：29 个框全用不透明 2dp 会把原图糊满
+                            color = (colorOf[block.id] ?: c.primary)
+                                .copy(alpha = if (isCurrent || isSelected) 1f else 0.42f),
+                            topLeft = Offset(dx + b[0] * scale, dy + b[1] * scale),
+                            size = Size(
+                                ((b[2] - b[0]) * scale).coerceAtLeast(1f),
+                                ((b[3] - b[1]) * scale).coerceAtLeast(1f),
+                            ),
+                            style = Stroke(width = when {
+                                isSelected -> 3f
+                                isCurrent -> 2f
+                                else -> 1f
+                            }.dp.toPx()),
                         )
                     }
                 }
@@ -242,7 +292,10 @@ fun OcrStreamScreen(
         ) {
             OcrMarkdownView(
                 markdown = shown,
-                autoScrollBottom = true,
+                // 选中某块时关掉自动滚底，否则每帧 setMarkdown 都把视线拽回底部
+                autoScrollBottom = selectedId == null,
+                highlightBlockId = selectedId,
+                onBlockTap = { id -> selectedId = id },
                 modifier = Modifier.fillMaxSize().padding(Space.sm),
             )
             if (shown.isEmpty()) {
@@ -257,4 +310,59 @@ fun OcrStreamScreen(
 
         Spacer(Modifier.height(Space.sm))
     }
+}
+
+/* ---------------------- 区域框的四色着色 ---------------------- */
+
+/** 四色：主色打头，其余取和纸张背景、正文墨色都不撞的深色 */
+private val BLOCK_COLORS = listOf(
+    Color(0xFFCC785C), // 珊瑚橘（primary）
+    Color(0xFF1D9E75), // teal
+    Color(0xFFBA7517), // amber
+    Color(0xFF534AB7), // purple
+)
+
+/**
+ * 贪心四色着色。
+ *
+ * 邻接判据用「间距 < gap」而不是「bbox 相交」：
+ * 试卷上的文本块上下紧挨、边界几乎重合（实测 b0003 底边 457、b0004 顶边 461，只差 4px），
+ * 用相交判断会得到一张空邻接表 → 每块都拿到第一个颜色 → 四色等于没做。
+ *
+ * 四色定理保证平面图 4 色足够；贪心在这里够用，因为它只需要"相邻不同色"，不追求最优。
+ */
+private fun assignBlockColors(
+    blocks: List<OcrStreamBlock>,
+    gap: Float = 12f,
+): Map<String, Color> {
+    val adj = buildAdjacency(blocks, gap)
+    val result = HashMap<String, Color>(blocks.size)
+    blocks.forEach { block ->
+        val used = adj[block.id].orEmpty().mapNotNull { result[it] }.toSet()
+        result[block.id] = BLOCK_COLORS.firstOrNull { it !in used } ?: BLOCK_COLORS[0]
+    }
+    return result
+}
+
+private fun buildAdjacency(
+    blocks: List<OcrStreamBlock>,
+    gap: Float,
+): Map<String, List<String>> {
+    val adj = blocks.associate { it.id to mutableListOf<String>() }
+    for (i in blocks.indices) {
+        for (j in i + 1 until blocks.size) {
+            if (touching(blocks[i].bbox, blocks[j].bbox, gap)) {
+                adj[blocks[i].id]?.add(blocks[j].id)
+                adj[blocks[j].id]?.add(blocks[i].id)
+            }
+        }
+    }
+    return adj
+}
+
+/** 两个矩形"外扩 gap 后是否相交"。gap 用原图坐标，1400×1812 的页面取 12 左右分组刚好 */
+private fun touching(a: List<Int>, b: List<Int>, gap: Float): Boolean {
+    if (a.size != 4 || b.size != 4) return false
+    return !(a[2] + gap < b[0] || b[2] + gap < a[0] ||
+        a[3] + gap < b[1] || b[3] + gap < a[1])
 }

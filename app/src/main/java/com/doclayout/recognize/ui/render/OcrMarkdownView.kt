@@ -21,6 +21,7 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -53,9 +54,14 @@ fun OcrMarkdownView(
     textColor: Int = Color.parseColor("#1a1a1a"),
     /** streaming: scroll to bottom after each update */
     autoScrollBottom: Boolean = false,
+    /** 当前选中的区域 id；非 null 时 WebView 把对应块高亮并滚到中间 */
+    highlightBlockId: String? = null,
+    /** 点中正文里的某个区域时回调（参数是区域 id，如 b0005） */
+    onBlockTap: (String) -> Unit = {},
 ) {
     val context = LocalContext.current
     var ready by remember { mutableStateOf(false) }
+    val tapSink = rememberUpdatedState(onBlockTap)
 
     val webView = remember {
         WebView(context).apply {
@@ -66,10 +72,15 @@ fun OcrMarkdownView(
             overScrollMode = WebView.OVER_SCROLL_NEVER
             // 长按不要弹系统菜单：这里是只读结果页，选中反而挡住内容
             setOnCreateContextMenuListener { _, _, _ -> }
-            addJavascriptInterface(HeightBridge { h ->
-                // 高度回调先留给以后用（比如让 WebView 自适应高度嵌进滚动列表）
-                Log.d("OcrMarkdown", "content height = $h")
-            }, "Android")
+            // 用 rememberUpdatedState 兜住回调：WebView 是 remember 出来的，
+            // 直接捕获 onBlockTap 会一直用第一次组合时的闭包（和 sheetDrag 同一个坑）
+            addJavascriptInterface(
+                AndroidBridge(
+                    onHeightSink = { h -> Log.d("OcrMarkdown", "content height = $h") },
+                    onBlockTapSink = { id -> tapSink.value(id) },
+                ),
+                "Android",
+            )
             webViewClient = object : WebViewClient() {
                 override fun onPageFinished(view: WebView, url: String?) {
                     ready = true
@@ -94,6 +105,17 @@ fun OcrMarkdownView(
         }
     }
 
+    // 高亮：id 变了就更新。流式期间 setMarkdown 每帧会重建块，
+    // JS 侧的 applyHighlight() 会在 setMarkdown 末尾把 class 补回来。
+    LaunchedEffect(highlightBlockId, ready) {
+        if (ready) {
+            webView.evaluateJavascript(
+                "highlightBlock(${JSONObject.quote(highlightBlockId ?: "")})",
+                null,
+            )
+        }
+    }
+
     DisposableEffect(Unit) {
         onDispose {
             webView.stopLoading()
@@ -114,10 +136,19 @@ fun OcrMarkdownView(
     }
 }
 
-/** JS → Kotlin 的唯一回调：内容高度。名字要和 render.html 里的 window.Android.onHeight 对上 */
-private class HeightBridge(private val sink: (Int) -> Unit) {
+/**
+ * JS → Kotlin 的桥。方法名必须和 render.html 里 window.Android.onXxx 对上。
+ * 只挂两个：onHeight（内容高度，目前只打日志）和 onBlockTap（点正文回传区域 id）。
+ */
+private class AndroidBridge(
+    private val onHeightSink: (Int) -> Unit,
+    private val onBlockTapSink: (String) -> Unit,
+) {
     @JavascriptInterface
-    fun onHeight(h: Int) = sink(h)
+    fun onHeight(h: Int) = onHeightSink(h)
+
+    @JavascriptInterface
+    fun onBlockTap(id: String) = onBlockTapSink(id)
 }
 
 /** 复制按钮用：把多页 markdown 拼成一份，页间用分隔线，方便直接粘到笔记里 */
