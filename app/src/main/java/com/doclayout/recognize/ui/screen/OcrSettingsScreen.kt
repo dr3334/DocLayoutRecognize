@@ -10,6 +10,7 @@ import com.doclayout.recognize.ui.component.SwitchRow
 import com.doclayout.recognize.ui.theme.Ocr
 import com.doclayout.recognize.ui.theme.OcrType
 import com.doclayout.recognize.ui.theme.Space
+import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -21,8 +22,10 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.safeDrawingPadding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.OutlinedTextField
@@ -35,6 +38,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 
@@ -57,10 +61,14 @@ fun OcrSettingsScreen(
     baseUrl: String,
     model: String,
     credential: String,
+    /** 端侧模式就绪徽标：null=查询中（见 OcrApp 的轮询） */
+    deviceReady: Boolean?,
     onModeChange: (OcrMode) -> Unit,
     onBaseUrlChange: (String) -> Unit,
     onCredentialChange: (String) -> Unit,
     onClearRecords: () -> Unit,
+    /** 「管理端侧模型」入口 → OcrRoute.Models */
+    onOpenModels: () -> Unit,
     onBack: () -> Unit,
     onExit: () -> Unit,
 ) {
@@ -79,10 +87,12 @@ fun OcrSettingsScreen(
             baseUrl = baseUrl,
             model = model,
             credential = credential,
+            deviceReady = deviceReady,
             onModeChange = onModeChange,
             onBaseUrlChange = onBaseUrlChange,
             onCredentialChange = onCredentialChange,
             onClearRecords = onClearRecords,
+            onOpenModels = onOpenModels,
             onExit = onExit,
         )
     }
@@ -108,17 +118,25 @@ fun OcrSettingsContent(
     baseUrl: String,
     model: String,
     credential: String,
+    deviceReady: Boolean?,
     onModeChange: (OcrMode) -> Unit,
     onBaseUrlChange: (String) -> Unit,
     onCredentialChange: (String) -> Unit,
     onClearRecords: () -> Unit,
+    onOpenModels: () -> Unit,
     onExit: () -> Unit,
 ) {
     val c = Ocr.colors
-    // 正在编辑哪一项：null / "url" / "token"
+    // 正在编辑哪一项：null / "mode" / "url" / "token"
     var editing by remember { mutableStateOf<String?>(null) }
 
     when (editing) {
+        "mode" -> ModeChoiceDialog(
+            current = mode,
+            onSelect = { onModeChange(it); editing = null },
+            onDismiss = { editing = null },
+        )
+
         "url" -> EditValueDialog(
             title = "服务地址",
             initial = baseUrl,
@@ -152,44 +170,85 @@ fun OcrSettingsContent(
             // ── 识别服务：这两项决定"扫描"能不能真的跑起来
             SectionLabel("识别服务")
             SettingCard {
+                // 三选（云端 / 本地 / 端侧）改用对话框，不再二值翻转：
+                // 三个选项循环点会绕晕，列表一眼可选。
                 SettingRow(
                     label = "接口模式",
                     value = mode.label,
-                    onClick = {
-                        onModeChange(if (mode == OcrMode.Cloud) OcrMode.Local else OcrMode.Cloud)
-                    },
+                    onClick = { editing = "mode" },
                 )
-                RowDivider()
-                SettingRow(
-                    label = "服务地址",
-                    value = baseUrl.removePrefix("https://").removePrefix("http://"),
-                    onClick = { editing = "url" },
-                )
-                if (mode == OcrMode.Cloud) {
-                    RowDivider()
-                    SettingRow(label = "模型", value = model)
+                when (mode) {
+                    OcrMode.Cloud -> {
+                        RowDivider()
+                        SettingRow(
+                            label = "服务地址",
+                            value = baseUrl.removePrefix("https://").removePrefix("http://"),
+                            onClick = { editing = "url" },
+                        )
+                        RowDivider()
+                        SettingRow(label = "模型", value = model)
+                        RowDivider()
+                        SettingRow(
+                            label = "Access Token",
+                            value = if (credential.isBlank()) "未配置" else maskToken(credential),
+                            onClick = { editing = "token" },
+                        )
+                        RowDivider()
+                        SettingRow(
+                            label = "服务状态",
+                            value = if (credential.isNotBlank()) "已配置" else "缺 Token",
+                        )
+                    }
+
+                    OcrMode.Local -> {
+                        RowDivider()
+                        SettingRow(
+                            label = "服务地址",
+                            value = baseUrl.removePrefix("https://").removePrefix("http://"),
+                            onClick = { editing = "url" },
+                        )
+                        RowDivider()
+                        SettingRow(label = "服务状态", value = "本地直连（可留空 Token）")
+                    }
+
+                    // 端态没有地址/Token 的概念：隐藏这两行，改显就绪徽标 + 模型管理入口
+                    OcrMode.OnDevice -> {
+                        RowDivider()
+                        SettingRow(
+                            label = "端侧模型状态",
+                            value = when (deviceReady) {
+                                true -> "模型文件已就绪"
+                                false -> "模型文件未就绪"
+                                null -> "检查中…"
+                            },
+                        )
+                        RowDivider()
+                        SettingRow(
+                            label = "管理端侧模型",
+                            value = "下载 · 暂停 · 删除",
+                            onClick = onOpenModels,
+                        )
+                        RowDivider()
+                        SettingRow(
+                            label = "服务状态",
+                            value = if (deviceReady == true) "模型就绪，可离线识别" else "请先在模型页完成下载",
+                        )
+                    }
                 }
-                RowDivider()
-                SettingRow(
-                    label = "Access Token",
-                    value = if (credential.isBlank()) "未配置" else maskToken(credential),
-                    onClick = { editing = "token" },
-                )
-                RowDivider()
-                SettingRow(
-                    label = "服务状态",
-                    value = if (mode == OcrMode.Cloud) {
-                        if (credential.isNotBlank()) "已配置" else "缺 Token"
-                    } else {
-                        "本地直连（可留空 Token）"
-                    },
-                )
             }
 
             // ── 识别
             SectionLabel("识别")
             SettingCard {
-                SettingRow(label = "识别引擎", value = "PaddleOCR-VL 1.6（云端）", onClick = {})
+                SettingRow(
+                    label = "识别引擎",
+                    value = when (mode) {
+                        OcrMode.Cloud -> "PaddleOCR-VL 1.6（云端）"
+                        OcrMode.Local -> "PaddleOCR-VL 1.6（本地服务）"
+                        OcrMode.OnDevice -> "PP-DocLayoutV3 + GLM-OCR（端侧）"
+                    },
+                    onClick = {},
+                )
                 RowDivider()
                 SettingRow(label = "输出格式", value = "Markdown + LaTeX", onClick = {})
                 RowDivider()
@@ -301,6 +360,66 @@ private fun EditValueDialog(
                 Text("保存", color = c.primary)
             }
         },
+        dismissButton = {
+            TextButton(onClick = onDismiss) { Text("取消", color = c.muted) }
+        },
+    )
+}
+
+/**
+ * 接口模式三选一弹窗。
+ *
+ * 用了什么组件：AlertDialog + 可点击行（选中项前置珊瑚色圆点）。
+ * 之前「接口模式」是二值翻转（点一下 Cloud↔Local），加入端侧后三态循环点会绕晕，
+ * 列表式一眼可选；每行带一句说明，新手不用猜"端侧"是什么。
+ */
+@Composable
+private fun ModeChoiceDialog(
+    current: OcrMode,
+    onSelect: (OcrMode) -> Unit,
+    onDismiss: () -> Unit,
+) {
+    val c = Ocr.colors
+    val options = listOf(
+        Triple(OcrMode.Cloud, "星河社区异步接口", "需要 Access Token，联网识别"),
+        Triple(OcrMode.Local, "自建 PaddleX 服务", "paddlex --serve，需填服务地址"),
+        Triple(OcrMode.OnDevice, "模型下载到本机", "离线识别，需先在模型页完成下载"),
+    )
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        containerColor = c.canvas,
+        title = { Text("识别服务用哪个？", style = OcrType.TitleMd, color = c.ink) },
+        text = {
+            Column {
+                options.forEachIndexed { i, (m, title, desc) ->
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clickable { onSelect(m) }
+                            .padding(vertical = 10.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Box(
+                            modifier = Modifier
+                                .padding(end = 10.dp)
+                                .size(8.dp)
+                                .clip(CircleShape)
+                                .background(if (m == current) c.primary else c.hairline),
+                        )
+                        Column(Modifier.weight(1f)) {
+                            Text(text = m.label, style = OcrType.BodySm, color = c.ink)
+                            Text(
+                                text = title + " · " + desc,
+                                style = OcrType.Caption.copy(fontSize = 12.sp),
+                                color = c.mutedSoft,
+                            )
+                        }
+                    }
+                    if (i < options.lastIndex) RowDivider()
+                }
+            }
+        },
+        confirmButton = {},
         dismissButton = {
             TextButton(onClick = onDismiss) { Text("取消", color = c.muted) }
         },

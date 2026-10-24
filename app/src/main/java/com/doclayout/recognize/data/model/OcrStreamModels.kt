@@ -23,7 +23,11 @@ data class OcrStreamBlock(
     val format: String,
     /** 正文。图片块为空，看图请用 [resource] */
     val text: String,
-    /** 该区域的裁剪图，形如 `assets/p0001-b0001.png`（相对 assets/stream/） */
+    /**
+     * 该区域的裁剪图。两种根：演示样本是相对路径 `assets/p0001-b0001.png`（根在 assets/stream/）；
+     * 真实记录经 DocumentIrMapper.resolveResources 改写成记录目录里的绝对路径（/data/.../assets/xxx.png）。
+     * toMarkdown 按是否以 / 开头区分这两种情况。
+     */
     val resource: String?,
 ) {
     val isImage: Boolean get() = format == "resource" || type == "image"

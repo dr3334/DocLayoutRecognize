@@ -1,7 +1,11 @@
 package com.doclayout.recognize.ui.screen
 
+import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.util.Log
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.PickVisualMediaRequest
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
@@ -19,12 +23,17 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.safeDrawingPadding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.rememberUpdatedState
@@ -49,8 +58,14 @@ import androidx.compose.animation.slideOutVertically
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.TextStyle
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.text.drawText
 import androidx.compose.ui.text.rememberTextMeasurer
+import com.doclayout.recognize.data.local.LocalIrExport
+import com.doclayout.recognize.data.local.LocalJobStatus
+import com.doclayout.recognize.data.local.LocalOcrEngine
+import com.doclayout.recognize.data.local.LocalStreamRegion
+import com.doclayout.recognize.data.local.OcrStore
 import com.doclayout.recognize.data.local.OcrStreamDemo
 import com.doclayout.recognize.data.local.OcrStreamExport
 import com.doclayout.recognize.data.model.OcrStreamPage
@@ -68,9 +83,12 @@ import androidx.compose.ui.graphics.drawscope.Fill
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.input.pointer.pointerInput
 import com.doclayout.recognize.data.model.OcrStreamBlock
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
+import java.io.File
 import kotlin.math.min
 
 /*
@@ -86,6 +104,8 @@ import kotlin.math.min
  *   - 文本每 3 个字符刷一次（cut += 3），不是每字符：每次变化都要跨进程
  *     evaluateJavascript 一次，逐字符是 80+ 次/秒，WebView 会掉帧
  *   - 图片块整块出现，不逐字：半截的 ![](stream/assets/p00 只会闪一下纯文本
+ *   - 真实识别的实时输出也不是整段直上：追赶循环每 26ms 放出 liveShownLen 附近的
+ *     一小截，积压越多走得越快（见 liveMarkdown 下面的 LaunchedEffect），观感连续
  *
  * 公式能"边打边渲"靠的是 render.html 里的 balance()，不是这里的代码。
  * 配套阅读：LEARNING.md 第二节「公式怎么能边打边渲染」
@@ -113,14 +133,150 @@ fun OcrStreamScreen(
     page: OcrStreamPage? = null,
     /** 点中某个区域时回调；默认空实现，所以现有调用点不用改 */
     onBlockClick: (OcrStreamBlock) -> Unit = {},
+    /**
+     * 端侧引擎门面：非 null 时本页升级为「流式识别渲染」—— 选图 / 深链 scanpath 直达后
+     * 跑真实端侧流水线，识别中下半区实时渲染逐区域流式输出（边生成边渲染），
+     * 终态自动切到 DocumentIR 区域页（框 / 正文联动 / 调序 / 导出 / 回放全部可用）。
+     * null = 纯演示模式（内置样本 + 打字机回放），原有调用点行为完全不变。
+     */
+    engine: LocalOcrEngine? = null,
+    /** 深链 --es scanpath 直达的图片绝对路径（应用可读位置）；仅 engine 非 null 时生效 */
+    initialPath: String? = null,
 ) {
     val c = Ocr.colors
     val context = LocalContext.current
-    val data = remember(page) { page ?: OcrStreamDemo.load(context) }
+    val demoData = remember(page) { page ?: OcrStreamDemo.load(context) }
+
+    // ── 真实识别会话（engine == null 时整段休眠，页面行为与纯演示一致）。
+    // 状态机三态见 [StreamPhase]：没发起过识别走演示；跑起来后 jobStatus 非空；
+    // 终态且拿到 DocumentIR 区域页（recPage）后进入"完成"，框与交互全部挂在真实数据上。
+    val scope = rememberCoroutineScope()
+    // 只为复用 stageUri（content Uri → cacheDir 文件）；记录仓库本体是引擎的 documents 目录
+    val store = remember { OcrStore(context) }
+    var jobDocId by remember { mutableStateOf<String?>(null) }
+    var jobJobId by remember { mutableStateOf<String?>(null) }
+    var jobStatus by remember { mutableStateOf<LocalJobStatus?>(null) }
+    // 流式快照：只在 stream.revision 变化时才写入（见轮询循环），驱动下半区实时重组
+    var liveRegions by remember { mutableStateOf<List<LocalStreamRegion>>(emptyList()) }
+    var recPage by remember { mutableStateOf<OcrStreamPage?>(null) }
+    var recImagePath by remember { mutableStateOf<String?>(null) }
+    var recFramePath by remember { mutableStateOf<String?>(null) }
+    var starting by remember { mutableStateOf(false) }
+    var recError by remember { mutableStateOf<String?>(null) }
+    val running = jobStatus?.let { it.running && !it.terminal } == true
+
+    val phase = when {
+        recPage != null -> StreamPhase.Done
+        jobStatus != null -> StreamPhase.Recognizing
+        else -> StreamPhase.Demo
+    }
+    val data = if (phase == StreamPhase.Done) recPage else demoData
     // ordered 每次访问都是新 List（getter 里 mapNotNull），必须 remember：
     // 否则 pointerInput 的 key 每帧都变，手势会被不停重启（和 sheetDrag 那个坑同源），
     // colorOf 的 remember(ordered) 也会失效、每次重组重算一遍。
     val ordered = remember(data) { data?.ordered.orEmpty() }
+
+    // ── 打字机 / 平滑上屏状态（声明在 runOne 之前：新一轮识别要把它们清零，见下）
+    // playKey/doneText/typing/activeIndex 服务"回放"；liveShownLen 服务"识别中的平滑上屏"
+    var playKey by remember { mutableIntStateOf(0) }
+    var doneText by remember { mutableStateOf("") }
+    var typing by remember { mutableStateOf("") }
+    var activeIndex by remember { mutableIntStateOf(-1) }
+    // 识别中"已经显示到第几个字"，追赶循环推进它（见 liveMarkdown 下面的 LaunchedEffect）
+    var liveShownLen by remember { mutableIntStateOf(0) }
+    // 终态回放是否进行中：false 时下半区直接给终稿全文，不逐字
+    var replaying by remember { mutableStateOf(false) }
+
+    // ── 真实识别的启动 / 轮询 / 取消 / 选图（逻辑与流水识别测试页同源，见 OcrPipelineScreen）
+    fun runOne(file: File) {
+        val eng = engine ?: return
+        scope.launch {
+            starting = true
+            recError = null
+            try {
+                // 先磁盘对账回写引擎内存 readiness：模型没就绪就明说，别让用户等报错
+                val ready = eng.refreshReadiness()
+                if (!ready.filesReady) {
+                    recError = "模型还没就绪（${ready.state}）：${ready.message}\n去 设置 → 管理端侧模型 处理"
+                    return@launch
+                }
+                // 新一轮：清上一轮展示状态，回到识别中形态。
+                // playKey 归零很关键：终态靠 playKey==0 判断"本轮没按过重播 → 正文已经
+                // 流式放过一遍，直接展示终稿"；不归零的话第二轮完成还会整屏重打
+                recImagePath = file.absolutePath
+                jobDocId = null; jobJobId = null; jobStatus = null
+                liveRegions = emptyList(); recPage = null; recFramePath = null
+                liveShownLen = 0; playKey = 0
+                // createInput 落盘记录并 autoStart；再显式 start 一次兜住"只落盘没启动"的分支
+                val summary = eng.createInput(title = OcrStore.titleFor(1), image = file)
+                jobDocId = summary.id
+                runCatching { eng.start(summary.id, again = false) }
+            } catch (e: Exception) {
+                recError = e.message ?: "启动流水线失败"
+            } finally {
+                starting = false
+            }
+        }
+    }
+
+    // 状态轮询：sequence 去重写 jobStatus；流式文本按 revision 变化才更新；
+    // 终态读 export（document.json → OcrStreamPage + 规范化图路径），recPage 非空即切"完成"
+    LaunchedEffect(jobDocId) {
+        val eng = engine ?: return@LaunchedEffect
+        val id = jobDocId ?: return@LaunchedEffect
+        var lastSequence = -1L
+        var lastRevision = -1L
+        while (isActive) {
+            val s = runCatching { eng.status(id) }.getOrNull()
+            if (s != null) {
+                if (s.sequence != lastSequence) {
+                    lastSequence = s.sequence
+                    jobStatus = s
+                    if (s.jobId.isNotBlank()) jobJobId = s.jobId
+                }
+                val rev = s.stream?.revision ?: 0L
+                if (rev != lastRevision) {
+                    lastRevision = rev
+                    liveRegions = s.stream?.regions.orEmpty()
+                }
+                if (s.terminal) {
+                    val export: LocalIrExport? = runCatching { eng.readExport(id) }.getOrNull()
+                    recPage = export?.page
+                    recFramePath = export?.inputPath
+                    break
+                }
+            }
+            delay(400)
+        }
+    }
+
+    // 深链直达：--ei ocr 6 --es scanpath <应用可读路径>（OcrApp 没实现 onNewIntent，先 force-stop）
+    LaunchedEffect(initialPath) {
+        if (engine == null) return@LaunchedEffect
+        val path = initialPath ?: return@LaunchedEffect
+        val file = File(path)
+        if (!file.isFile) recError = "找不到图片：$path" else runOne(file)
+    }
+
+    fun cancelJob() {
+        val eng = engine ?: return
+        val id = jobDocId ?: return
+        val jid = jobJobId ?: return
+        scope.launch { runCatching { eng.cancel(id, jid) } }
+    }
+
+    // Photo Picker 单选（系统选择器，任何版本都不需要存储权限）
+    val pickImage = rememberLauncherForActivityResult(
+        ActivityResultContracts.PickVisualMedia(),
+    ) { uri ->
+        if (uri != null) {
+            scope.launch {
+                runCatching { store.stageUri(context, uri, 0) }
+                    .onSuccess { runOne(it) }
+                    .onFailure { recError = it.message ?: "读不到这张图片" }
+            }
+        }
+    }
 
     // ── 顺序修正：模型最容易出错的地方（reading_order 会把某一段排到别处）
     // customOrder = null 表示没动过，用模型给的顺序；否则是调整后的 id 序列。
@@ -145,25 +301,29 @@ fun OcrStreamScreen(
         }
     }
 
-    var playKey by remember { mutableIntStateOf(0) }
-    var doneText by remember { mutableStateOf("") }
-    var typing by remember { mutableStateOf("") }
-    var activeIndex by remember { mutableIntStateOf(-1) }
-
     // 上下联动 + 区域合并：选中的是一组 id。连续点几个块 = 多选，原图按并集画一个大框
     var selectedIds by remember { mutableStateOf<Set<String>>(emptySet()) }
     // 长按拖动时的临时范围（空 = 没在拖）。拖动中用它做预览，松手才提交
     var dragAnchor by remember { mutableStateOf<Int?>(null) }
     var dragRange by remember { mutableStateOf<Set<String>>(emptySet()) }
 
-    LaunchedEffect(playKey, data) {
+    LaunchedEffect(playKey, data, phase) {
+        // 识别进行中不回放打字机：下半区此刻展示真实流式输出（liveMarkdown）。
+        if (phase == StreamPhase.Recognizing) return@LaunchedEffect
         doneText = ""
         typing = ""
         activeIndex = -1
         selectedIds = emptySet()
         // 重播 = 用当前顺序重放一遍。**不清空 customOrder**：那是刚调好的东西，
         // 点个重播就丢了会挨骂。要回模型原序，按工具条上的「还原」。
-        if (data == null) return@LaunchedEffect
+        if (data == null) { replaying = false; return@LaunchedEffect }
+        // 真实识别刚完成（playKey==0 = 本轮没按过重播）：正文在识别中已经流式放过一遍，
+        // 直接展示终稿。此刻整屏清空重打要十几秒，观感像倒退；想看打字机按「重播」。
+        if (phase == StreamPhase.Done && playKey == 0) {
+            replaying = false
+            return@LaunchedEffect
+        }
+        replaying = true
 
         var acc = ""
         blocksNow.forEachIndexed { idx, block ->
@@ -191,6 +351,7 @@ fun OcrStreamScreen(
             typing = ""
         }
         activeIndex = -1
+        replaying = false
     }
 
     // 流式态的正文：轻量，每次重组算一遍即可
@@ -201,16 +362,47 @@ fun OcrStreamScreen(
         else -> "$doneText\n\n@@blk:@@\n$typing"
     }
 
-    // 调过顺序后正文必须重建：逐字累积的 doneText 是按旧顺序拼的，改不了。
-    // null 表示没调过，shown 回落到流式态 —— 没动过顺序的人行为完全不变。
-    val reorderedMarkdown = remember(blocksNow, customOrder) {
-        if (customOrder == null) {
-            null
-        } else {
-            blocksNow.joinToString("\n\n") { "@@blk:${it.id}@@\n${OcrStreamDemo.toMarkdown(it)}" }
+    // 识别中的实时流式正文：把引擎逐区域的部分输出（raw 是合法 UTF-8 但句子可能不完整）
+    // 按生成顺序拼起来 —— render.html 的 balance() 会把半截公式补齐着渲，这就是
+    // "边生成边渲染"。锚点 / 框联动要等终态的 DocumentIR（recPage）。
+    val liveMarkdown = remember(liveRegions) {
+        liveRegions.mapNotNull { r -> r.raw.trim().takeIf { it.isNotEmpty() } }
+            .joinToString("\n\n")
+    }
+
+    // ── 平滑上屏（追赶式打字机）：引擎每 400ms 轮询回来一批新字，直接整段上屏就是
+    // "突然蹦出一坨"。liveShownLen 记录"已经显示到第几个字"，本循环每 26ms 推进一步去追
+    // liveMarkdown.length：积压越多一步走得越远（约 1/12，对数式收敛，一大段约 1 秒铺完），
+    // 快追上时一步只走 1 个字 —— 远看整段滑入，近看逐字打出，且永远追得上生成速度。
+    LaunchedEffect(liveMarkdown, phase) {
+        if (phase != StreamPhase.Recognizing) return@LaunchedEffect
+        while (liveShownLen < liveMarkdown.length) {
+            val remaining = liveMarkdown.length - liveShownLen
+            liveShownLen += ((remaining + 11) / 12).coerceIn(1, 24)
+            delay(26) // 与演示打字机同节奏：这是 WebView 刷得动的上限（见文件头注释）
         }
     }
-    val shown = reorderedMarkdown ?: streamed
+
+    // 识别中实际喂 WebView 的是 liveMarkdown 的前 liveShownLen 个字（末尾若劈开了
+    // 代理对字符就让一位，避免 emoji / 生僻字显示成乱码），结尾跟一个假光标 "▌"：
+    // "正在打字"的观感由它和 26ms 步进一起给出来，终态自动消失。
+    val liveShown = run {
+        var end = liveShownLen.coerceAtMost(liveMarkdown.length)
+        if (end in 1 until liveMarkdown.length && Character.isHighSurrogate(liveMarkdown[end - 1])) end--
+        liveMarkdown.substring(0, end) + if (running) " ▌" else ""
+    }
+
+    // 终稿全文（带锚点、按当前生效顺序）：三个用途 —— 调序后立即重建（逐字累积的
+    // doneText 是旧序拼的，改不了）；真实识别完成直接展示终稿（不整屏清空重打）；
+    // 回放结束后的兜底。没调过序时它正好等于回放完成时的 doneText，行为不变。
+    val fullMarkdown = remember(blocksNow) {
+        blocksNow.joinToString("\n\n") { "@@blk:${it.id}@@\n${OcrStreamDemo.toMarkdown(it)}" }
+    }
+    val shown = when (phase) {
+        StreamPhase.Recognizing -> liveShown
+        StreamPhase.Done -> if (replaying) streamed else fullMarkdown
+        else -> if (customOrder != null && !replaying) fullMarkdown else streamed
+    }
     val activeBlock = blocksNow.getOrNull(activeIndex)
 
     // activeIndex 就是进度：它之前的块都已经"识别过"，已识别集合不用另存状态
@@ -327,10 +519,28 @@ fun OcrStreamScreen(
     Box(Modifier.fillMaxSize()) {
     Column(Modifier.fillMaxSize().safeDrawingPadding()) {
         OcrTopBar(
-            title = "流式渲染",
-            subtitle = "区域 JSON → 逐字出公式与样图",
+            title = if (phase == StreamPhase.Demo) "流式渲染" else "流式识别渲染",
+            subtitle = when (phase) {
+                StreamPhase.Demo -> "区域 JSON → 逐字出公式与样图"
+                StreamPhase.Recognizing -> "端侧识别中 · 边生成边渲染"
+                StreamPhase.Done -> "识别完成 · 框/正文联动，可调序导出"
+            },
             onBack = onBack,
         )
+
+        // ── 真实识别入口行（仅 engine 非 null）：缩略图 + 文件名 + 选图 / 重跑 / 取消
+        if (engine != null) {
+            RecognitionEntryRow(
+                imagePath = recImagePath,
+                starting = starting,
+                running = running,
+                phase = phase,
+                status = jobStatus,
+                onPick = { pickImage.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)) },
+                onRerun = { recImagePath?.let { runOne(File(it)) } },
+                onCancel = ::cancelJob,
+            )
+        }
 
         // ── 上半：原图 + 当前区域高亮
         BoxWithConstraints(
@@ -343,15 +553,63 @@ fun OcrStreamScreen(
             val density = LocalDensity.current
             val boxW = with(density) { maxWidth.toPx() }
             val boxH = with(density) { maxHeight.toPx() }
-            val bitmap = remember {
+            // 三种图源：内置样本（演示）/ 用户输入原图（识别中）/ 规范化 source.png（完成，
+            // 它才是 DocumentIR bbox 的坐标系基准）。大图解码都是磁盘 IO，走 produceState + IO 线程。
+            val demoBitmap = remember {
                 runCatching {
                     context.assets.open(OcrStreamDemo.SOURCE_IMAGE).use { BitmapFactory.decodeStream(it) }
                 }.getOrNull()
             }
+            val inputBitmap by produceState<Bitmap?>(null, recImagePath) {
+                val p = recImagePath
+                if (p != null) value = withContext(Dispatchers.IO) { decodeImageScaled(p, 2048) }
+            }
+            val frameBitmap by produceState<Bitmap?>(null, recFramePath) {
+                val p = recFramePath
+                if (p != null) value = withContext(Dispatchers.IO) { decodeImageScaled(p, 2048) }
+            }
+            val bitmap = when (phase) {
+                StreamPhase.Done -> frameBitmap
+                StreamPhase.Recognizing -> inputBitmap
+                StreamPhase.Demo -> demoBitmap
+            }
             // 序号测量器：只在 SHOW_BLOCK_INDEX 打开时才会被调用，默认不影响性能
             val indexMeasurer = rememberTextMeasurer()
 
-            if (bitmap != null && data != null) {
+            if (phase == StreamPhase.Recognizing) {
+                // 识别中：引擎还没给 bbox（框要等 export 的 DocumentIR），上半区只放原图 + 进度浮层
+                val bmp = inputBitmap
+                if (bmp != null) {
+                    Image(
+                        bitmap = bmp.asImageBitmap(),
+                        contentDescription = "输入图",
+                        contentScale = ContentScale.Fit,
+                        modifier = Modifier.fillMaxSize(),
+                    )
+                }
+                Column(
+                    modifier = Modifier
+                        .align(Alignment.Center)
+                        .background(c.canvas.copy(alpha = 0.88f), RoundedCornerShape(Radii.md))
+                        .padding(horizontal = Space.md, vertical = Space.sm),
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                ) {
+                    if (running) {
+                        CircularProgressIndicator(modifier = Modifier.size(20.dp), strokeWidth = 2.dp, color = c.primary)
+                        Spacer(Modifier.height(Space.xs))
+                    }
+                    val s = jobStatus
+                    Text(
+                        text = when {
+                            s == null || s.state == "waiting" -> "准备中…"
+                            s.regionTotal > 0 -> "${stageChip(s)} · 区域 ${s.regionCompleted}/${s.regionTotal}"
+                            else -> stageChip(s)
+                        },
+                        style = OcrType.Caption.copy(fontSize = 12.sp),
+                        color = c.ink,
+                    )
+                }
+            } else if (bitmap != null && data != null) {
                 // ContentScale.Fit 的等效换算：取小的那个比例，再居中留边
                 val scale = min(boxW / data.width, boxH / data.height)
                 val drawW = data.width * scale
@@ -487,7 +745,7 @@ fun OcrStreamScreen(
                 }
             } else {
                 Text(
-                    text = "样本图加载失败",
+                    text = "图加载失败",
                     style = OcrType.Caption,
                     color = c.muted,
                     modifier = Modifier.align(Alignment.Center),
@@ -507,6 +765,23 @@ fun OcrStreamScreen(
             horizontalArrangement = Arrangement.spacedBy(Space.xs),
         ) {
             when {
+                // 识别中：阶段徽标 + 区域进度 + 取消（调序/回放都等完成）
+                phase == StreamPhase.Recognizing -> {
+                    val s = jobStatus
+                    Pill(
+                        text = s?.let { stageChip(it) } ?: "启动中",
+                        background = c.primary.copy(alpha = 0.12f),
+                        color = c.primary,
+                    )
+                    if (s != null && s.regionTotal > 0) {
+                        Text(
+                            text = "区域 ${s.regionCompleted} / ${s.regionTotal}",
+                            style = OcrType.Caption.copy(fontSize = 12.sp),
+                            color = c.muted,
+                        )
+                    }
+                }
+
                 editing != null -> {
                     // 这里只改"这段排第几"，不动它的框。
                     // 用按钮而不是拖拽：下方正文在 WebView 里，拖动排序要穿透 JS 层；
@@ -563,15 +838,28 @@ fun OcrStreamScreen(
                 }
             }
             Spacer(Modifier.weight(1f))
-            // 胶囊自绘：公共的 Pill 是只读展示组件，加 onClick 会牵动其它调用点
-            Box(
-                modifier = Modifier
-                    .clip(RoundedCornerShape(999.dp))
-                    .background(c.primary.copy(alpha = 0.12f))
-                    .clickable { playKey++ }
-                    .padding(horizontal = 14.dp, vertical = 6.dp),
-            ) {
-                Text(text = "重播", style = OcrType.Caption, color = c.primary)
+            // 识别中把右侧让给取消按钮（重播无意义：下半区是实时输出不是回放）
+            if (phase == StreamPhase.Recognizing) {
+                Box(
+                    modifier = Modifier
+                        .clip(RoundedCornerShape(999.dp))
+                        .background(c.danger.copy(alpha = 0.10f))
+                        .clickable { cancelJob() }
+                        .padding(horizontal = 14.dp, vertical = 6.dp),
+                ) {
+                    Text(text = "取消", style = OcrType.Caption, color = c.danger)
+                }
+            } else {
+                // 胶囊自绘：公共的 Pill 是只读展示组件，加 onClick 会牵动其它调用点
+                Box(
+                    modifier = Modifier
+                        .clip(RoundedCornerShape(999.dp))
+                        .background(c.primary.copy(alpha = 0.12f))
+                        .clickable { playKey++ }
+                        .padding(horizontal = 14.dp, vertical = 6.dp),
+                ) {
+                    Text(text = "重播", style = OcrType.Caption, color = c.primary)
+                }
             }
         }
 
@@ -585,18 +873,27 @@ fun OcrStreamScreen(
         ) {
             OcrMarkdownView(
                 markdown = shown,
-                // 选中某块时关掉自动滚底，否则每帧 setMarkdown 都把视线拽回底部
-                autoScrollBottom = effectiveIds.isEmpty(),
-                highlightBlockIds = blocksNow.filter { it.id in effectiveIds }.map { it.id },
-                onBlockTap = { id ->
-                    Log.d("LinkDebug", "text tap -> $id")
-                    blocksNow.firstOrNull { it.id == id }?.let { applySingle(it) }
+                // 选中某块时关掉自动滚底，否则每帧 setMarkdown 都把视线拽回底部；
+                // 识别中永远自动滚底 —— 实时输出就该跟着走
+                autoScrollBottom = effectiveIds.isEmpty() || phase == StreamPhase.Recognizing,
+                highlightBlockIds = if (phase == StreamPhase.Recognizing) {
+                    emptyList()
+                } else {
+                    blocksNow.filter { it.id in effectiveIds }.map { it.id }
+                },
+                onBlockTap = if (phase == StreamPhase.Recognizing) {
+                    {}
+                } else {
+                    { id ->
+                        Log.d("LinkDebug", "text tap -> $id")
+                        blocksNow.firstOrNull { it.id == id }?.let { applySingle(it) }
+                    }
                 },
                 modifier = Modifier.fillMaxSize().padding(Space.sm),
             )
             if (shown.isEmpty()) {
                 Text(
-                    text = "正在准备区域数据…",
+                    text = if (phase == StreamPhase.Recognizing) "正在等待第一个区域的输出…" else "正在准备区域数据…",
                     style = OcrType.Caption,
                     color = c.mutedSoft,
                     modifier = Modifier.align(Alignment.Center),
@@ -624,6 +921,149 @@ fun OcrStreamScreen(
                     .padding(horizontal = Space.md, vertical = Space.xs),
             )
         }
+
+        // 识别错误走弹窗（模型未就绪 / 深链路径错误 / start 被拒都到这）
+        recError?.let { message ->
+            AlertDialog(
+                onDismissRequest = { recError = null },
+                containerColor = c.canvas,
+                title = { Text("识别出了问题", style = OcrType.TitleMd, color = c.ink) },
+                text = {
+                    Text(
+                        message,
+                        style = OcrType.BodySm.copy(fontSize = 13.sp, lineHeight = 20.sp),
+                        color = c.muted,
+                    )
+                },
+                confirmButton = {
+                    TextButton(onClick = { recError = null }) { Text("知道了", color = c.muted) }
+                },
+            )
+        }
+    }
+}
+
+/* ---------------------- 真实识别的三态与辅助 ---------------------- */
+
+/**
+ * 页面形态：
+ *   Demo        —— 没发起过识别（或 engine 为 null）：内置样本 + 打字机回放，行为同旧版演示页
+ *   Recognizing —— 引擎跑作业中：上半用户原图 + 进度浮层，下半实时流式 markdown
+ *   Done        —— 终态且拿到 DocumentIR 区域页：框/联动/调序/导出/回放全挂在真实数据上
+ */
+private enum class StreamPhase { Demo, Recognizing, Done }
+
+/** 阶段徽标文案：运行中用引擎原样 state（preparing/recognizing/saving），waiting 显示待开始。 */
+private fun stageChip(s: LocalJobStatus): String = if (s.state == "waiting") "待开始" else s.state
+
+/** 文件解码（限边长防大图占内存）；与 OcrPipelineScreen.decodeScaled 同思路，页面各留私有副本。 */
+private fun decodeImageScaled(path: String, maxSide: Int): Bitmap? = runCatching {
+    val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+    BitmapFactory.decodeFile(path, bounds)
+    if (bounds.outWidth <= 0) return@runCatching null
+    var sample = 1
+    while (maxOf(bounds.outWidth, bounds.outHeight) / sample > maxSide) sample *= 2
+    BitmapFactory.decodeFile(path, BitmapFactory.Options().apply { inSampleSize = sample })
+}.getOrNull()
+
+/**
+ * 识别入口行（仅 engine 非 null 的调用点显示）：小缩略图 + 文件名 + 动作。
+ * 识别中给"取消"，其余状态给"选图 / 重新识别本图"。
+ */
+@Composable
+private fun RecognitionEntryRow(
+    imagePath: String?,
+    starting: Boolean,
+    running: Boolean,
+    phase: StreamPhase,
+    status: LocalJobStatus?,
+    onPick: () -> Unit,
+    onRerun: () -> Unit,
+    onCancel: () -> Unit,
+) {
+    val c = Ocr.colors
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = Space.lg, vertical = Space.xs),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(Space.xs),
+    ) {
+        val thumb = imagePath?.let { remember(it) { decodeImageScaled(it, 256) } }
+        Box(
+            modifier = Modifier
+                .size(40.dp)
+                .clip(RoundedCornerShape(Radii.sm))
+                .background(c.creamStrong),
+            contentAlignment = Alignment.Center,
+        ) {
+            if (thumb != null) {
+                Image(
+                    bitmap = thumb.asImageBitmap(),
+                    contentDescription = "输入图缩略",
+                    contentScale = ContentScale.Crop,
+                    modifier = Modifier.fillMaxSize(),
+                )
+            } else {
+                Text("图", style = OcrType.Caption.copy(fontSize = 11.sp), color = c.mutedSoft)
+            }
+        }
+        Column(Modifier.weight(1f)) {
+            Text(
+                text = imagePath?.let { File(it).name } ?: "选一张图，立即开始端侧识别",
+                style = OcrType.BodySm.copy(fontSize = 13.sp),
+                color = c.ink,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
+            val s = status
+            if (phase == StreamPhase.Recognizing && s != null && s.message.isNotBlank()) {
+                Text(
+                    text = s.message,
+                    style = OcrType.Caption.copy(fontSize = 11.sp),
+                    color = c.mutedSoft,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+            }
+        }
+        if (running) {
+            EntryChip(label = "取消", danger = true, onClick = onCancel)
+        } else {
+            EntryChip(label = if (starting) "启动中…" else "选图", enabled = !starting, onClick = onPick)
+            EntryChip(
+                label = "重新识别",
+                enabled = imagePath != null && !starting,
+                onClick = onRerun,
+            )
+        }
+    }
+}
+
+/** 入口行的小胶囊按钮（30dp 高，比工具条的 ActionKey 更轻量）。 */
+@Composable
+private fun EntryChip(
+    label: String,
+    enabled: Boolean = true,
+    danger: Boolean = false,
+    onClick: () -> Unit,
+) {
+    val c = Ocr.colors
+    val fg = if (danger) c.danger else c.ink
+    val bg = if (danger) c.danger.copy(alpha = 0.10f) else c.surfaceCard
+    Box(
+        modifier = Modifier
+            .clip(RoundedCornerShape(10.dp))
+            .background(bg)
+            .clickable(enabled = enabled, onClick = onClick)
+            .padding(horizontal = 10.dp, vertical = 6.dp),
+        contentAlignment = Alignment.Center,
+    ) {
+        Text(
+            text = label,
+            style = OcrType.Caption.copy(fontSize = 12.sp),
+            color = if (enabled) fg else fg.copy(alpha = 0.35f),
+        )
     }
 }
 

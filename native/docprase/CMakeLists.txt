@@ -1,0 +1,293 @@
+cmake_minimum_required(VERSION 3.20)
+project(dococr VERSION 0.1.0 LANGUAGES CXX)
+set(CMAKE_CXX_STANDARD 17)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
+set(CMAKE_CXX_EXTENSIONS OFF)
+if(MSVC)
+  add_compile_options(/utf-8)
+endif()
+option(DOCOCR_BUILD_TESTS "构建无模型验收测试" ON)
+option(DOCOCR_TEST_KATEX "运行实际 KaTeX 排版测试（先 npm ci --prefix tests/math-rendering）" OFF)
+option(DOCOCR_REQUIRE_MNN "缺少 MNN 时配置失败" OFF)
+option(DOCOCR_REQUIRE_LLM "缺少 Ovis 所需 LLM 运行时时配置失败" OFF)
+# schema 更新时重新生成 CLI 内嵌校验契约。
+set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS
+  "${CMAKE_CURRENT_SOURCE_DIR}/schemas/document-ir/document-ir-1.0.schema.json"
+  "${CMAKE_CURRENT_SOURCE_DIR}/schemas/document-ir/document-ir-1.1.schema.json"
+  "${CMAKE_CURRENT_SOURCE_DIR}/schemas/document-ir/document-ir-1.2.schema.json"
+  "${CMAKE_CURRENT_SOURCE_DIR}/schemas/document-ir/document-ir-1.3.schema.json"
+  "${CMAKE_CURRENT_SOURCE_DIR}/schemas/document-ir/document-ir-1.4.schema.json"
+  "${CMAKE_CURRENT_SOURCE_DIR}/schemas/document-ir/document-ir-1.5-image.schema.json"
+  "${CMAKE_CURRENT_SOURCE_DIR}/schemas/document-ir/document-ir-1.5-pdf.schema.json"
+  "${CMAKE_CURRENT_SOURCE_DIR}/schemas/document-ir/document-ir-1.6-image.schema.json"
+  "${CMAKE_CURRENT_SOURCE_DIR}/schemas/document-ir/document-ir-1.6-pdf.schema.json"
+  "${CMAKE_CURRENT_SOURCE_DIR}/schemas/document-ir/document-ir-1.7-image.schema.json"
+  "${CMAKE_CURRENT_SOURCE_DIR}/schemas/document-ir/document-ir-1.7-pdf.schema.json"
+  "${CMAKE_CURRENT_SOURCE_DIR}/schemas/document-ir/document-ir-1.8-image.schema.json"
+  "${CMAKE_CURRENT_SOURCE_DIR}/schemas/document-ir/document-ir-1.8-pdf.schema.json"
+  "${CMAKE_CURRENT_SOURCE_DIR}/schemas/document-ir/document-ir-1.9-image.schema.json"
+  "${CMAKE_CURRENT_SOURCE_DIR}/schemas/document-ir/document-ir-1.9-pdf.schema.json"
+  "${CMAKE_CURRENT_SOURCE_DIR}/schemas/document-ir/document-ir-1.10-image.schema.json"
+  "${CMAKE_CURRENT_SOURCE_DIR}/schemas/document-ir/document-ir-1.10-pdf.schema.json"
+  "${CMAKE_CURRENT_SOURCE_DIR}/schemas/document-ir/document-ir-1.11-image.schema.json"
+  "${CMAKE_CURRENT_SOURCE_DIR}/schemas/document-ir/document-ir-1.11-pdf.schema.json"
+  "${CMAKE_CURRENT_SOURCE_DIR}/schemas/document-ir/document-ir-1.12-image.schema.json"
+  "${CMAKE_CURRENT_SOURCE_DIR}/schemas/document-ir/document-ir-1.12-pdf.schema.json"
+)
+file(READ "${CMAKE_CURRENT_SOURCE_DIR}/schemas/document-ir/document-ir-1.0.schema.json" DOCUMENT_SCHEMA_1_0)
+file(READ "${CMAKE_CURRENT_SOURCE_DIR}/schemas/document-ir/document-ir-1.1.schema.json" DOCUMENT_SCHEMA_1_1)
+file(READ "${CMAKE_CURRENT_SOURCE_DIR}/schemas/document-ir/document-ir-1.2.schema.json" DOCUMENT_SCHEMA_1_2)
+file(READ "${CMAKE_CURRENT_SOURCE_DIR}/schemas/document-ir/document-ir-1.3.schema.json" DOCUMENT_SCHEMA_1_3)
+file(READ "${CMAKE_CURRENT_SOURCE_DIR}/schemas/document-ir/document-ir-1.4.schema.json" DOCUMENT_SCHEMA_1_4)
+file(READ "${CMAKE_CURRENT_SOURCE_DIR}/schemas/document-ir/document-ir-1.5-image.schema.json" DOCUMENT_SCHEMA_1_5_IMAGE)
+file(READ "${CMAKE_CURRENT_SOURCE_DIR}/schemas/document-ir/document-ir-1.5-pdf.schema.json" DOCUMENT_SCHEMA_1_5_PDF)
+file(READ "${CMAKE_CURRENT_SOURCE_DIR}/schemas/document-ir/document-ir-1.6-image.schema.json" DOCUMENT_SCHEMA_1_6_IMAGE)
+file(READ "${CMAKE_CURRENT_SOURCE_DIR}/schemas/document-ir/document-ir-1.6-pdf.schema.json" DOCUMENT_SCHEMA_1_6_PDF)
+file(READ "${CMAKE_CURRENT_SOURCE_DIR}/schemas/document-ir/document-ir-1.7-image.schema.json" DOCUMENT_SCHEMA_1_7_IMAGE)
+file(READ "${CMAKE_CURRENT_SOURCE_DIR}/schemas/document-ir/document-ir-1.7-pdf.schema.json" DOCUMENT_SCHEMA_1_7_PDF)
+file(READ "${CMAKE_CURRENT_SOURCE_DIR}/schemas/document-ir/document-ir-1.8-image.schema.json" DOCUMENT_SCHEMA_1_8_IMAGE)
+file(READ "${CMAKE_CURRENT_SOURCE_DIR}/schemas/document-ir/document-ir-1.8-pdf.schema.json" DOCUMENT_SCHEMA_1_8_PDF)
+file(READ "${CMAKE_CURRENT_SOURCE_DIR}/schemas/document-ir/document-ir-1.9-image.schema.json" DOCUMENT_SCHEMA_1_9_IMAGE)
+file(READ "${CMAKE_CURRENT_SOURCE_DIR}/schemas/document-ir/document-ir-1.9-pdf.schema.json" DOCUMENT_SCHEMA_1_9_PDF)
+file(READ "${CMAKE_CURRENT_SOURCE_DIR}/schemas/document-ir/document-ir-1.10-image.schema.json" DOCUMENT_SCHEMA_1_10_IMAGE)
+file(READ "${CMAKE_CURRENT_SOURCE_DIR}/schemas/document-ir/document-ir-1.10-pdf.schema.json" DOCUMENT_SCHEMA_1_10_PDF)
+file(READ "${CMAKE_CURRENT_SOURCE_DIR}/schemas/document-ir/document-ir-1.11-image.schema.json" DOCUMENT_SCHEMA_1_11_IMAGE)
+file(READ "${CMAKE_CURRENT_SOURCE_DIR}/schemas/document-ir/document-ir-1.11-pdf.schema.json" DOCUMENT_SCHEMA_1_11_PDF)
+file(READ "${CMAKE_CURRENT_SOURCE_DIR}/schemas/document-ir/document-ir-1.12-image.schema.json" DOCUMENT_SCHEMA_1_12_IMAGE)
+file(READ "${CMAKE_CURRENT_SOURCE_DIR}/schemas/document-ir/document-ir-1.12-pdf.schema.json" DOCUMENT_SCHEMA_1_12_PDF)
+function(dococr_split_schema input output)
+  # 每行独立为一个短原始字面量，保留原始换行并避开 MSVC C2026。
+  string(REPLACE "\n" "\n)SCHEMA\"\nR\"SCHEMA(" split "${${input}}")
+  set(${output} "R\"SCHEMA(${split})SCHEMA\"" PARENT_SCOPE)
+endfunction()
+foreach(version IN ITEMS 1_0 1_1 1_2 1_3 1_4 1_5_IMAGE 1_5_PDF 1_6_IMAGE 1_6_PDF 1_7_IMAGE 1_7_PDF 1_8_IMAGE 1_8_PDF 1_9_IMAGE 1_9_PDF 1_10_IMAGE 1_10_PDF 1_11_IMAGE 1_11_PDF 1_12_IMAGE 1_12_PDF)
+  dococr_split_schema(DOCUMENT_SCHEMA_${version} DOCUMENT_SCHEMA_${version}_LITERALS)
+endforeach()
+configure_file(src/document_schemas.hpp.in "${CMAKE_CURRENT_BINARY_DIR}/generated/document_schemas.hpp" @ONLY)
+set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS
+  "${CMAKE_CURRENT_SOURCE_DIR}/configs/formula-symbols.json")
+file(READ "${CMAKE_CURRENT_SOURCE_DIR}/configs/formula-symbols.json" FORMULA_SYMBOLS_JSON)
+configure_file(src/formula_symbols.hpp.in "${CMAKE_CURRENT_BINARY_DIR}/generated/formula_symbols.hpp" @ONLY)
+add_library(dococr_core STATIC src/config.cpp src/sha256.cpp src/layout_preprocess.cpp src/visual_adaptation.cpp src/table_parser.cpp src/output_assessment.cpp src/region_recognition.cpp src/region_structure.cpp src/layout_region_policy.cpp src/label_export_policy.cpp src/markdown.cpp src/pdf_renderer.cpp src/pdf_job.cpp)
+target_sources(dococr_core PRIVATE src/formula_scripts.cpp src/page_plan.cpp
+  src/content_validation.cpp src/block_result.cpp src/document_export.cpp src/layout_filter.cpp
+  src/layout_output.cpp src/image_resources.cpp src/page_identity.cpp src/candidate_review.cpp
+  src/layout_inference.cpp src/page_execution.cpp src/page_pipeline.cpp)
+set_target_properties(dococr_core PROPERTIES POSITION_INDEPENDENT_CODE ON)
+target_include_directories(dococr_core PUBLIC include PRIVATE third_party/stb third_party/nlohmann
+  "${CMAKE_CURRENT_BINARY_DIR}/generated")
+target_compile_features(dococr_core PUBLIC cxx_std_17)
+set(DOCOCR_MNN_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/../MNN" CACHE PATH "MNN 公共头文件与已构建库所在目录")
+find_path(DOCOCR_MNN_INCLUDE MNN/Interpreter.hpp PATHS "${DOCOCR_MNN_ROOT}/include" NO_DEFAULT_PATH)
+find_library(DOCOCR_MNN_LIBRARY MNN PATHS "${DOCOCR_MNN_ROOT}/build" "${DOCOCR_MNN_ROOT}/build/Release" NO_DEFAULT_PATH)
+find_path(DOCOCR_LLM_INCLUDE llm/llm.hpp PATHS "${DOCOCR_MNN_ROOT}/transformers/llm/engine/include" NO_DEFAULT_PATH)
+find_library(DOCOCR_LLM_LIBRARY llm PATHS "${DOCOCR_MNN_ROOT}/build" "${DOCOCR_MNN_ROOT}/build/Release" NO_DEFAULT_PATH)
+if(DOCOCR_REQUIRE_MNN AND (NOT DOCOCR_MNN_INCLUDE OR NOT DOCOCR_MNN_LIBRARY))
+  message(FATAL_ERROR "DOCOCR_REQUIRE_MNN=ON 但未找到 MNN 头文件和库：${DOCOCR_MNN_ROOT}")
+endif()
+if(WIN32)
+  # MNN 在 Windows 强制关闭 MNN_SEP_BUILD；llm 对象合并进 MNN.dll。
+  set(DOCOCR_LLM_LINK_READY TRUE)
+else()
+  set(DOCOCR_LLM_LINK_READY ${DOCOCR_LLM_LIBRARY})
+endif()
+if(DOCOCR_REQUIRE_LLM AND (NOT DOCOCR_MNN_INCLUDE OR NOT DOCOCR_MNN_LIBRARY OR
+    NOT DOCOCR_LLM_INCLUDE OR NOT DOCOCR_LLM_LINK_READY))
+  message(FATAL_ERROR "DOCOCR_REQUIRE_LLM=ON 但未找到 MNN/LLM 运行时：${DOCOCR_MNN_ROOT}")
+endif()
+add_library(dococr_c SHARED src/abi.cpp src/production_backend.cpp)
+if(DOCOCR_MNN_INCLUDE AND DOCOCR_MNN_LIBRARY)
+  target_sources(dococr_c PRIVATE src/layout_mnn_backend.cpp)
+  target_include_directories(dococr_c PRIVATE "${DOCOCR_MNN_INCLUDE}")
+  target_link_libraries(dococr_c PRIVATE "${DOCOCR_MNN_LIBRARY}")
+  target_compile_definitions(dococr_c PRIVATE DOCOCR_HAS_MNN=1)
+  if(DOCOCR_LLM_INCLUDE AND DOCOCR_LLM_LINK_READY)
+    target_sources(dococr_c PRIVATE src/printed_page_mnn_backend.cpp)
+    target_include_directories(dococr_c PRIVATE "${DOCOCR_LLM_INCLUDE}" third_party/stb)
+    if(DOCOCR_LLM_LIBRARY)
+      target_link_libraries(dococr_c PRIVATE "${DOCOCR_LLM_LIBRARY}")
+    endif()
+    target_compile_definitions(dococr_c PRIVATE DOCOCR_HAS_LLM=1)
+  endif()
+endif()
+if(WIN32 AND DOCOCR_MNN_INCLUDE AND DOCOCR_MNN_LIBRARY)
+  target_compile_definitions(dococr_c PRIVATE USING_MNN_DLL)
+endif()
+target_include_directories(dococr_c PUBLIC include PRIVATE src)
+target_link_libraries(dococr_c PUBLIC dococr_core)
+target_compile_definitions(dococr_c PRIVATE DOCOCR_SHARED DOCOCR_BUILDING)
+target_compile_definitions(dococr_c INTERFACE DOCOCR_SHARED)
+add_executable(dococr_cli tools/cli.cpp src/reexport.cpp src/schema_validator.cpp)
+target_include_directories(dococr_cli PRIVATE src third_party/nlohmann "${CMAKE_CURRENT_BINARY_DIR}/generated")
+target_link_libraries(dococr_cli PRIVATE dococr_c)
+if(WIN32)
+  target_link_libraries(dococr_cli PRIVATE shell32)
+endif()
+if(DOCOCR_BUILD_TESTS)
+  enable_testing()
+  add_library(dococr_c_test SHARED src/abi.cpp tests/fixture_backend.cpp)
+  target_include_directories(dococr_c_test PUBLIC include PRIVATE src third_party/nlohmann)
+  target_link_libraries(dococr_c_test PUBLIC dococr_core)
+  target_compile_definitions(dococr_c_test PRIVATE DOCOCR_SHARED DOCOCR_BUILDING)
+  target_compile_definitions(dococr_c_test INTERFACE DOCOCR_SHARED)
+  add_executable(dococr_contract_test tests/contract.cpp)
+  target_link_libraries(dococr_contract_test PRIVATE dococr_c_test)
+  add_test(NAME contract COMMAND dococr_contract_test)
+  add_executable(dococr_page_pipeline_test tests/page_pipeline.cpp)
+  target_include_directories(dococr_page_pipeline_test PRIVATE src third_party/nlohmann)
+  target_link_libraries(dococr_page_pipeline_test PRIVATE dococr_core)
+  add_test(NAME page_pipeline COMMAND dococr_page_pipeline_test)
+  add_executable(dococr_page_plan_test tests/page_plan.cpp)
+  target_include_directories(dococr_page_plan_test PRIVATE src)
+  target_link_libraries(dococr_page_plan_test PRIVATE dococr_core)
+  add_test(NAME page_plan COMMAND dococr_page_plan_test)
+  add_executable(dococr_block_result_test tests/block_result.cpp)
+  target_include_directories(dococr_block_result_test PRIVATE src)
+  target_link_libraries(dococr_block_result_test PRIVATE dococr_core)
+  add_test(NAME block_result COMMAND dococr_block_result_test)
+  add_executable(dococr_document_export_test tests/document_export.cpp)
+  target_include_directories(dococr_document_export_test PRIVATE src third_party/nlohmann)
+  target_link_libraries(dococr_document_export_test PRIVATE dococr_core)
+  add_test(NAME document_export COMMAND dococr_document_export_test)
+  add_executable(dococr_layout_filter_test tests/layout_filter.cpp)
+  target_include_directories(dococr_layout_filter_test PRIVATE src)
+  target_link_libraries(dococr_layout_filter_test PRIVATE dococr_core)
+  add_test(NAME layout_filter COMMAND dococr_layout_filter_test)
+  add_executable(dococr_layout_output_test tests/layout_output.cpp)
+  target_include_directories(dococr_layout_output_test PRIVATE src)
+  target_link_libraries(dococr_layout_output_test PRIVATE dococr_core)
+  add_test(NAME layout_output COMMAND dococr_layout_output_test)
+  add_executable(dococr_image_resources_test tests/image_resources.cpp)
+  target_include_directories(dococr_image_resources_test PRIVATE src)
+  target_link_libraries(dococr_image_resources_test PRIVATE dococr_core)
+  add_test(NAME image_resources COMMAND dococr_image_resources_test
+    ${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures)
+  add_executable(dococr_layout_preprocess_probe tests/layout_preprocess_probe.cpp)
+  target_include_directories(dococr_layout_preprocess_probe PRIVATE src)
+  target_link_libraries(dococr_layout_preprocess_probe PRIVATE dococr_core)
+  add_executable(dococr_visual_adaptation_probe tests/visual_adaptation_probe.cpp)
+  target_include_directories(dococr_visual_adaptation_probe PRIVATE src third_party/stb)
+  target_link_libraries(dococr_visual_adaptation_probe PRIVATE dococr_core)
+  add_test(NAME visual_adaptation_probe COMMAND dococr_visual_adaptation_probe)
+  add_executable(dococr_layout_jpeg_decode_probe tests/layout_jpeg_decode_probe.cpp)
+  target_include_directories(dococr_layout_jpeg_decode_probe PRIVATE third_party/stb)
+  if(DOCOCR_MNN_INCLUDE AND DOCOCR_MNN_LIBRARY)
+    add_executable(dococr_layout_mnn_probe scripts/model_probe_layout.cpp)
+    target_include_directories(dococr_layout_mnn_probe PRIVATE "${DOCOCR_MNN_INCLUDE}")
+    target_link_libraries(dococr_layout_mnn_probe PRIVATE "${DOCOCR_MNN_LIBRARY}")
+    if(DOCOCR_LLM_INCLUDE AND DOCOCR_LLM_LINK_READY)
+      add_executable(dococr_issue18_token_probe scripts/issue18_token_probe.cpp)
+      target_include_directories(dococr_issue18_token_probe PRIVATE "${DOCOCR_LLM_INCLUDE}" "${DOCOCR_MNN_INCLUDE}")
+      target_link_libraries(dococr_issue18_token_probe PRIVATE "${DOCOCR_MNN_LIBRARY}")
+      if(DOCOCR_LLM_LIBRARY)
+        target_link_libraries(dococr_issue18_token_probe PRIVATE "${DOCOCR_LLM_LIBRARY}")
+      endif()
+      add_executable(dococr_ovis_same_instance_probe scripts/model_probe_ovis_same_instance.cpp)
+      target_include_directories(dococr_ovis_same_instance_probe PRIVATE "${DOCOCR_LLM_INCLUDE}" "${DOCOCR_MNN_INCLUDE}")
+      target_link_libraries(dococr_ovis_same_instance_probe PRIVATE "${DOCOCR_MNN_LIBRARY}")
+      if(DOCOCR_LLM_LIBRARY)
+        target_link_libraries(dococr_ovis_same_instance_probe PRIVATE "${DOCOCR_LLM_LIBRARY}")
+      endif()
+    endif()
+  endif()
+  add_executable(dococr_cli_fixture tools/cli.cpp src/reexport.cpp src/schema_validator.cpp)
+  target_include_directories(dococr_cli_fixture PRIVATE src third_party/nlohmann "${CMAKE_CURRENT_BINARY_DIR}/generated")
+  target_link_libraries(dococr_cli_fixture PRIVATE dococr_c_test)
+  if(WIN32)
+    target_link_libraries(dococr_cli_fixture PRIVATE shell32)
+  endif()
+  find_package(Python3 COMPONENTS Interpreter REQUIRED)
+  add_test(NAME cli_integration COMMAND ${Python3_EXECUTABLE}
+    ${CMAKE_CURRENT_SOURCE_DIR}/tests/cli_integration.py
+    $<TARGET_FILE:dococr_cli_fixture> $<TARGET_FILE:dococr_cli>)
+  add_test(NAME reexport_integration COMMAND ${Python3_EXECUTABLE}
+    ${CMAKE_CURRENT_SOURCE_DIR}/tests/reexport_integration.py
+    $<TARGET_FILE:dococr_cli_fixture> $<TARGET_FILE:dococr_cli>
+    ${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/rgb2x2.png)
+  add_test(NAME config_integration COMMAND ${Python3_EXECUTABLE}
+    ${CMAKE_CURRENT_SOURCE_DIR}/tests/config_integration.py
+    $<TARGET_FILE:dococr_cli_fixture> ${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/rgb2x2.jpg)
+  add_test(NAME config_abi COMMAND ${Python3_EXECUTABLE}
+    ${CMAKE_CURRENT_SOURCE_DIR}/tests/config_abi.py $<TARGET_FILE:dococr_c_test>)
+  add_test(NAME layout_integration COMMAND ${Python3_EXECUTABLE}
+    ${CMAKE_CURRENT_SOURCE_DIR}/tests/layout_integration.py $<TARGET_FILE:dococr_cli_fixture>)
+  add_test(NAME issue19_dedup COMMAND ${Python3_EXECUTABLE}
+    ${CMAKE_CURRENT_SOURCE_DIR}/tests/issue19_dedup.py
+    $<TARGET_FILE:dococr_cli_fixture> $<TARGET_FILE:dococr_cli>)
+  add_test(NAME issue20_geometry COMMAND ${Python3_EXECUTABLE}
+    ${CMAKE_CURRENT_SOURCE_DIR}/tests/issue20_geometry.py
+    $<TARGET_FILE:dococr_cli_fixture> $<TARGET_FILE:dococr_cli>)
+  add_test(NAME issue20_owned_crop COMMAND ${Python3_EXECUTABLE}
+    ${CMAKE_CURRENT_SOURCE_DIR}/tests/issue20_owned_crop.py
+    $<TARGET_FILE:dococr_cli_fixture> $<TARGET_FILE:dococr_cli>)
+  add_test(NAME issue20_tuning COMMAND ${Python3_EXECUTABLE}
+    ${CMAKE_CURRENT_SOURCE_DIR}/tests/issue20_tuning.py
+    $<TARGET_FILE:dococr_cli_fixture> $<TARGET_FILE:dococr_cli>)
+  add_test(NAME issue20_large_page COMMAND ${Python3_EXECUTABLE}
+    ${CMAKE_CURRENT_SOURCE_DIR}/tests/issue20_large_page.py
+    $<TARGET_FILE:dococr_cli_fixture> $<TARGET_FILE:dococr_cli>)
+  add_test(NAME label_pipeline COMMAND ${Python3_EXECUTABLE}
+    ${CMAKE_CURRENT_SOURCE_DIR}/tests/label_pipeline.py
+    $<TARGET_FILE:dococr_cli_fixture> $<TARGET_FILE:dococr_cli>)
+  add_test(NAME semantic_text_rendering COMMAND ${Python3_EXECUTABLE}
+    ${CMAKE_CURRENT_SOURCE_DIR}/tests/semantic_text_rendering.py
+    $<TARGET_FILE:dococr_cli_fixture> $<TARGET_FILE:dococr_cli>)
+  add_test(NAME printed_page_integration COMMAND ${Python3_EXECUTABLE}
+    ${CMAKE_CURRENT_SOURCE_DIR}/tests/printed_page_integration.py $<TARGET_FILE:dococr_cli_fixture>)
+  add_test(NAME issue21_quality COMMAND ${Python3_EXECUTABLE}
+    ${CMAKE_CURRENT_SOURCE_DIR}/tests/issue21_quality.py
+    $<TARGET_FILE:dococr_c_test> $<TARGET_FILE:dococr_cli>)
+  add_test(NAME issue22_retry COMMAND ${Python3_EXECUTABLE}
+    ${CMAKE_CURRENT_SOURCE_DIR}/tests/issue22_retry.py
+    $<TARGET_FILE:dococr_c_test> $<TARGET_FILE:dococr_cli>)
+  add_test(NAME printed_formula_integration COMMAND ${Python3_EXECUTABLE}
+    ${CMAKE_CURRENT_SOURCE_DIR}/tests/printed_formula_integration.py $<TARGET_FILE:dococr_cli_fixture>)
+  add_test(NAME issue27_formula COMMAND ${Python3_EXECUTABLE}
+    ${CMAKE_CURRENT_SOURCE_DIR}/tests/issue27_formula.py
+    $<TARGET_FILE:dococr_cli_fixture> $<TARGET_FILE:dococr_cli>)
+  add_test(NAME issue27_rendering COMMAND ${Python3_EXECUTABLE}
+    ${CMAKE_CURRENT_SOURCE_DIR}/tests/issue27_rendering.py
+    $<TARGET_FILE:dococr_cli_fixture> $<TARGET_FILE:dococr_cli>)
+  add_test(NAME markdown_math_integration COMMAND ${Python3_EXECUTABLE}
+    ${CMAKE_CURRENT_SOURCE_DIR}/tests/markdown_math_integration.py
+    $<TARGET_FILE:dococr_cli_fixture> $<TARGET_FILE:dococr_cli>)
+  add_test(NAME formula_revalidation_integration COMMAND ${Python3_EXECUTABLE}
+    ${CMAKE_CURRENT_SOURCE_DIR}/tests/formula_revalidation_integration.py
+    $<TARGET_FILE:dococr_cli_fixture> $<TARGET_FILE:dococr_cli>)
+  if(DOCOCR_TEST_KATEX)
+    find_program(DOCOCR_NODE_EXECUTABLE node REQUIRED)
+    add_test(NAME markdown_katex_integration COMMAND ${Python3_EXECUTABLE}
+      ${CMAKE_CURRENT_SOURCE_DIR}/tests/markdown_math_integration.py
+      $<TARGET_FILE:dococr_cli_fixture> $<TARGET_FILE:dococr_cli>
+      --katex ${DOCOCR_NODE_EXECUTABLE})
+  endif()
+  add_test(NAME printed_table_integration COMMAND ${Python3_EXECUTABLE}
+    ${CMAKE_CURRENT_SOURCE_DIR}/tests/printed_table_integration.py $<TARGET_FILE:dococr_cli_fixture>)
+  add_test(NAME reading_order_integration COMMAND ${Python3_EXECUTABLE}
+    ${CMAKE_CURRENT_SOURCE_DIR}/tests/reading_order_integration.py $<TARGET_FILE:dococr_cli_fixture>)
+  add_test(NAME issue29_reviews COMMAND ${Python3_EXECUTABLE}
+    ${CMAKE_CURRENT_SOURCE_DIR}/tests/issue29_reviews.py
+    $<TARGET_FILE:dococr_cli_fixture> $<TARGET_FILE:dococr_cli> $<TARGET_FILE:dococr_c_test>)
+  add_test(NAME issue26_structure COMMAND ${Python3_EXECUTABLE}
+    ${CMAKE_CURRENT_SOURCE_DIR}/tests/issue26_structure.py
+    $<TARGET_FILE:dococr_cli_fixture> $<TARGET_FILE:dococr_cli>)
+  add_test(NAME issue27_structure COMMAND ${Python3_EXECUTABLE}
+    ${CMAKE_CURRENT_SOURCE_DIR}/tests/issue27_structure.py
+    $<TARGET_FILE:dococr_cli_fixture> $<TARGET_FILE:dococr_cli>)
+  add_test(NAME issue26_region_mapping COMMAND ${Python3_EXECUTABLE}
+    ${CMAKE_CURRENT_SOURCE_DIR}/tests/issue26_region_mapping.py
+    $<TARGET_FILE:dococr_cli_fixture> $<TARGET_FILE:dococr_cli>)
+  add_test(NAME issue31_input_planning COMMAND ${Python3_EXECUTABLE}
+    ${CMAKE_CURRENT_SOURCE_DIR}/tests/issue31_input_planning.py
+    $<TARGET_FILE:dococr_cli_fixture> $<TARGET_FILE:dococr_cli>)
+  add_test(NAME pdf_integration COMMAND ${Python3_EXECUTABLE}
+    ${CMAKE_CURRENT_SOURCE_DIR}/tests/pdf_integration.py $<TARGET_FILE:dococr_cli_fixture>)
+  add_test(NAME pdf_abi COMMAND ${Python3_EXECUTABLE}
+    ${CMAKE_CURRENT_SOURCE_DIR}/tests/pdf_abi.py $<TARGET_FILE:dococr_c_test>)
+  add_test(NAME printed_page_cancel COMMAND ${Python3_EXECUTABLE}
+    ${CMAKE_CURRENT_SOURCE_DIR}/tests/printed_page_cancel.py $<TARGET_FILE:dococr_c_test>)
+  add_test(NAME job_control COMMAND ${Python3_EXECUTABLE}
+    ${CMAKE_CURRENT_SOURCE_DIR}/tests/job_control.py $<TARGET_FILE:dococr_c_test>)
+  add_test(NAME cli_job_control COMMAND ${Python3_EXECUTABLE}
+    ${CMAKE_CURRENT_SOURCE_DIR}/tests/cli_job_control.py $<TARGET_FILE:dococr_cli_fixture>)
+endif()

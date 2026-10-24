@@ -73,14 +73,19 @@ object OcrStreamDemo {
      * 把一个区域变成一段 Markdown。
      *
      * 文本块的 `content.text` 本来就是 Markdown（公式已经写成 `$...$`），原样用；
-     * 图片块转成 `![](stream/assets/xxx.png)` —— render.html 的 resolveSrc() 会把相对路径
-     * 补成 `file:///android_asset/...`，所以不用在这边拼协议头。
+     * 图片块转成 `![](...)`——路径两种根：真实记录的 resource 已在 [DocumentIrMapper.resolveResources]
+     * 改写成裁剪图绝对路径，按 `file://` 原样嵌入（render.html 的 resolveSrc 放行 file:）；
+     * 演示样本仍是相对路径，补 `stream/` 前缀后由 resolveSrc 归到 android_asset 根。
+     * 独立公式块：content.format = latex，正文是裸 LaTeX（没有 $ 包裹），直接扔进 Markdown
+     * 只会显示成一段普通文字，必须自己补 $$。
      */
-    fun toMarkdown(block: OcrStreamBlock): String = when {
-        block.resource != null && block.text.isBlank() -> "![]($CROP_PREFIX${block.resource})"
-        // 独立公式块：content.format = latex，正文是裸 LaTeX（没有 $ 包裹），
-        // 直接扔进 Markdown 只会显示成一段普通文字，必须自己补 $$。
-        block.format == "latex" -> "$$${block.text.trim()}$$"
-        else -> block.text.trim()
+    fun toMarkdown(block: OcrStreamBlock): String {
+        val res = block.resource
+        return when {
+            res != null && block.text.isBlank() ->
+                if (res.startsWith("/")) "![](file://$res)" else "![]($CROP_PREFIX$res)"
+            block.format == "latex" -> "$$${block.text.trim()}$$"
+            else -> block.text.trim()
+        }
     }
 }

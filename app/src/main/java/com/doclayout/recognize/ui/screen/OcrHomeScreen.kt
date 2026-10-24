@@ -66,8 +66,11 @@ fun OcrHomeScreen(
     onOpenSettings: () -> Unit,
     onCapture: () -> Unit,
     onImport: () -> Unit,
+    onImportPdf: () -> Unit = {},
     onOpenRecord: (OcrRecord) -> Unit,
     onOpenStream: () -> Unit,
+    onOpenStreamRec: () -> Unit = {},
+    onOpenPipeline: () -> Unit = {},
 ) {
     val c = Ocr.colors
     var showAll by remember { mutableStateOf(false) }
@@ -112,14 +115,32 @@ fun OcrHomeScreen(
                     ) { fg -> IconCamera(fg, size = 22.dp) }
                     ActionCard(
                         label = "相册导入",
-                        hint = "支持 JPG / PNG / PDF",
+                        // Photo Picker 只认图片；PDF 走下面的 PdfEntry（OpenDocument）——
+                        // WP5 起整卷 PDF 试卷真的可以导入了，但不是从这个入口
+                        hint = "支持 JPG / PNG",
                         primary = false,
                         onClick = onImport,
                         modifier = Modifier.weight(1f),
                     ) { fg -> IconGallery(fg, size = 22.dp) }
                 }
 
-                Spacer(Modifier.height(34.dp))
+                Spacer(Modifier.height(14.dp))
+
+                // PDF 试卷导入（WP5）：一份 PDF = 一份试卷的多页，逐页栅格化后整卷合并
+                PdfEntry(onClick = onImportPdf)
+
+                Spacer(Modifier.height(Space.md))
+
+                // 端侧流水线测试入口（WP4）：正式分流（runScan 端侧分支）已在 WP5 接好，
+                // 这行保留为独立验证工具——单图快速重跑、看逐区域流式输出与 export 产物
+                // 流式识别渲染：流式渲染演示页的主体 + 真实端侧识别（选图后边生成边渲染，
+                // 完成后区域框/调序/导出全可用）。放三行入口最上面 —— 它是唯一"真识别"的那行，
+                // 流水识别（测试）保留为调试对照，流式渲染演示是样本回放。
+                StreamRecEntry(onClick = onOpenStreamRec)
+                Spacer(Modifier.height(Space.sm))
+
+                PipelineEntry(onClick = onOpenPipeline)
+                Spacer(Modifier.height(Space.sm))
 
                 StreamEntry(onClick = onOpenStream)
                 Spacer(Modifier.height(Space.md))
@@ -187,6 +208,100 @@ private fun HomeFooter() {
         Dot()
         Spacer(Modifier.width(8.dp))
         Text(text = "结果只留本机", style = OcrType.Caption.copy(fontSize = 12.sp), color = c.mutedSoft)
+    }
+}
+
+/**
+ * 首页的 PDF 试卷导入入口（WP5）。
+ *
+ * 「相册导入」的 Photo Picker 只能选图片，而试卷 PDF 一般躺在下载/文件目录，
+ * 所以单独一行、点开走 OpenDocument("application/pdf")（见 OcrApp.launchPdfPicker）：
+ * 选中的一份 PDF 会被逐页栅格化（data/local/PdfPageSource），整卷合并成一条多页记录。
+ * 做成整行卡片而不是第三张 ActionCard：与 PipelineEntry/StreamEntry 同级的"整行入口"，
+ * 主操作区两张大卡的位置留给最高频的拍照/相册。
+ */
+@Composable
+private fun PdfEntry(onClick: () -> Unit) {
+    val c = Ocr.colors
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(Radii.lg))
+            .background(c.surfaceCard)
+            .clickable(onClick = onClick)
+            .padding(horizontal = Space.md, vertical = 14.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Column(Modifier.weight(1f)) {
+            Text(text = "PDF 试卷导入", style = OcrType.BodySm, color = c.ink)
+            Text(
+                text = "整份 PDF 逐页栅格化 · 合并为一卷",
+                style = OcrType.Caption.copy(fontSize = 12.5.sp),
+                color = c.muted,
+            )
+        }
+        IconChevronRight(c.mutedSoft, size = 14.dp, stroke = 1.5.dp)
+    }
+}
+
+/**
+ * 首页的「流式识别渲染」入口（流式渲染演示页 + 真实识别的合体）。
+ *
+ * 做成整行卡片（与 [PipelineEntry] / [StreamEntry] 同级）：演示/验证类入口不是主操作。
+ * 页内行为见 OcrStreamScreen 的 StreamPhase 注释：识别中实时渲染逐区域输出，
+ * 完成后切 DocumentIR 区域页，框/正文联动、调序、导出、打字机回放全可用。
+ */
+@Composable
+private fun StreamRecEntry(onClick: () -> Unit) {
+    val c = Ocr.colors
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(Radii.lg))
+            .background(c.surfaceCard)
+            .clickable(onClick = onClick)
+            .padding(horizontal = Space.md, vertical = 14.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Column(Modifier.weight(1f)) {
+            Text(text = "流式识别渲染", style = OcrType.BodySm, color = c.ink)
+            Text(
+                text = "端侧真识别 · 边生成边渲染 · 可调序导出",
+                style = OcrType.Caption.copy(fontSize = 12.5.sp),
+                color = c.muted,
+            )
+        }
+        IconChevronRight(c.mutedSoft, size = 14.dp, stroke = 1.5.dp)
+    }
+}
+
+/**
+ * 首页的流水识别测试入口（WP4）。
+ *
+ * 做成整行卡片而不是第三张 ActionCard：与 [StreamEntry] 同级 —— 都是"演示/验证页"，
+ * 不是拍照/相册那种主操作。验证期过后（WP5 正式分流接好）这行会摘掉。
+ */
+@Composable
+private fun PipelineEntry(onClick: () -> Unit) {
+    val c = Ocr.colors
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(Radii.lg))
+            .background(c.surfaceCard)
+            .clickable(onClick = onClick)
+            .padding(horizontal = Space.md, vertical = 14.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Column(Modifier.weight(1f)) {
+            Text(text = "流水识别（测试）", style = OcrType.BodySm, color = c.ink)
+            Text(
+                text = "端侧 PP-DocLayoutV3 → GLM-OCR · 区域逐字流式",
+                style = OcrType.Caption.copy(fontSize = 12.5.sp),
+                color = c.muted,
+            )
+        }
+        IconChevronRight(c.mutedSoft, size = 14.dp, stroke = 1.5.dp)
     }
 }
 

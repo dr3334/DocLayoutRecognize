@@ -18,6 +18,14 @@ import androidx.compose.material3.MaterialTheme
  *   adb shell am start -n com.doclayout.recognize/.MainActivity --ei ocr 1 --ei dark 1
  *   adb shell am start -n com.doclayout.recognize/.MainActivity --ei ocr 2 --ei split 25
  *   adb shell am start -n com.doclayout.recognize/.MainActivity --es scan /data/user/0/com.doclayout.recognize/files/inbox/t.jpg
+ *   adb shell am start -n com.doclayout.recognize/.MainActivity --ei ocr 4 --es scanpath /data/user/0/com.doclayout.recognize/files/inbox/t.jpg
+ *
+ * 注意：本 Activity 没实现 onNewIntent —— 应用已在前台时带 extra 的 am start 不生效，
+ * 每次深链前先 adb shell am force-stop com.doclayout.recognize。
+ *
+ * scan 与 scanpath 的区别：
+ *   scan     → --ei ocr 2（结果页）走云端/HTTP 的 runScan 流程（选图→OcrVlApi→落盘 ocr/）
+ *   scanpath → --ei ocr 4（流水识别测试页）走端侧流水线 LocalOcrEngine.createInput+start
  */
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -34,6 +42,7 @@ class MainActivity : ComponentActivity() {
                     // split = 左栏占比百分比（50 = 1:1，25 = 1:3，0 = 只看文本）
                     startSplit = intent.getIntExtra("split", 50) / 100f,
                     startScanPath = intent.getStringExtra("scan"),
+                    startPipelinePath = intent.getStringExtra("scanpath"),
                 )
             }
         }

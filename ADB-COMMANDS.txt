@@ -81,14 +81,51 @@ app\build\outputs\apk\debug\app-debug.apk
 & $adb shell am force-stop com.doclayout.recognize
 & $adb shell am start -n com.doclayout.recognize/.MainActivity --ei ocr 2 --ei record 1
 
+# 3.8 流式渲染演示页
+& $adb shell am force-stop com.doclayout.recognize
+& $adb shell am start -n com.doclayout.recognize/.MainActivity --ei ocr 3
+
+# 3.9 端侧模型管理页（下载/暂停/删除/就绪状态）
+& $adb shell am force-stop com.doclayout.recognize
+& $adb shell am start -n com.doclayout.recognize/.MainActivity --ei ocr 5
+
+# 3.10 流水识别测试页（WP4：选图 → 端侧流水线 → 区域逐字流式 → export 产物）
+#     前提：设置 → 接口模式选「端侧」，且模型已下载就绪（见 3.9 页的「文件状态」）
+& $adb shell am force-stop com.doclayout.recognize
+& $adb shell am start -n com.doclayout.recognize/.MainActivity --ei ocr 4
+
+# 3.11 流水识别 · 直达一张图（--es scanpath 配 --ei ocr 4 或 6，路径要本应用可读）
+#     先把测试图推进应用私有目录（run-as cp 从 /data/local/tmp 拷贝；若报 Permission denied，
+#     改用下面第二条 cat 管道写法）：
+& adb push D:\test\paper.jpg /data/local/tmp/paper.jpg
+& adb shell run-as com.doclayout.recognize mkdir -p files/inbox
+& adb shell run-as com.doclayout.recognize cp /data/local/tmp/paper.jpg files/inbox/paper.jpg
+
+#     备选写法（stdin 直灌，最稳）：（Git Bash；PowerShell 用 Get-Content -Raw 换行会破坏二进制，别用）
+adb shell "run-as com.doclayout.recognize sh -c 'mkdir -p files/inbox && cat > files/inbox/paper.jpg'" < D:/test/paper.jpg
+
+& adb shell am force-stop com.doclayout.recognize
+& adb shell am start -n com.doclayout.recognize/.MainActivity --ei ocr 4 --es scanpath /data/user/0/com.doclayout.recognize/files/inbox/paper.jpg
+
+# 3.12 流式识别渲染页（流式渲染演示主体 + 真实识别：识别中实时渲染逐区域输出，
+#      完成后区域框/调序/导出/回放可用；scanpath 直达同 3.11，只是 ocr 用 6）
+& $adb shell am force-stop com.doclayout.recognize
+& $adb shell am start -n com.doclayout.recognize/.MainActivity --ei ocr 6
+& $adb shell am start -n com.doclayout.recognize/.MainActivity --ei ocr 6 --es scanpath /data/user/0/com.doclayout.recognize/files/inbox/paper.jpg
+
+#     跑完看产物（document.json / document.md / run-manifest.json 在记录目录根）：
+& adb shell run-as com.doclayout.recognize ls files/documents/
+
 参数速查：
-  ocr     0=首页  1=设置  2=结果页
-  dark    1=深色
-  empty   1=无记录空状态（同时禁用示例数据）
-  record  第几条记录（从 0 开始）
-  open    1=竖屏抽屉默认展开
-  split   横屏左栏占比百分比：50=1:1  25=1:3  0=只看文本
-  scan    跳过选图，直接扫这个文件路径
+  ocr      0=首页  1=设置  2=结果页  3=流式演示  4=流水识别测试  5=端侧模型  6=流式识别渲染
+  dark     1=深色
+  empty    1=无记录空状态（同时禁用示例数据）
+  record   第几条记录（从 0 开始）
+  open     1=竖屏抽屉默认展开
+  split    横屏左栏占比百分比：50=1:1  25=1:3  0=只看文本
+  scan     跳过选图，直接扫这个文件路径（结果页 runScan：云端/本地 HTTP 流程）
+  scanpath 端侧流水线直达图片（ocr 4 流水识别测试页 / ocr 6 流式识别渲染页共用），
+           createInput+start，路径要本应用可读（见 3.11）
 
 
 ----------------------------------------------------------
@@ -173,6 +210,10 @@ PowerShell 会把二进制当文本转码，存出来的 PNG 打不开。
 
 映射后设置页里填  http://127.0.0.1:8080  就能用。
 取消映射：& $adb reverse --remove-all
+
+# 7.3 端侧模式：看模型任务表（哪些文件 verified / 剩多少）
+& $adb shell run-as com.doclayout.recognize ls files/models/
+& $adb shell run-as com.doclayout.recognize cat files/models/state.json
 
 
 ----------------------------------------------------------

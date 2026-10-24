@@ -1,0 +1,62 @@
+[
+  {
+    "repo": "dr3334/PP-DocLayoutV3-mnn",
+    "path": "PP-DocLayoutV3.mnn",
+    "size": 130568736,
+    "sha256": "5f1a43441d70f6843012b47eb294bed7edd3d0ef2344f0074700a38cb2e29c67"
+  },
+  {
+    "repo": "MNN/GLM-OCR-MNN",
+    "path": "config.json",
+    "size": 342,
+    "sha256": "40d2d5bf0393cc347ff48cf29246ca9efff9a44a29c2c1ea4acac3135fff87fe"
+  },
+  {
+    "repo": "MNN/GLM-OCR-MNN",
+    "path": "llm_config.json",
+    "size": 884,
+    "sha256": "552ca5ccd5b8aa3cfd59ff78882775dcb212a972ab8e7a35ee81ee3681d22403"
+  },
+  {
+    "repo": "MNN/GLM-OCR-MNN",
+    "path": "llm.mnn",
+    "size": 486144,
+    "sha256": "02d24795f89d82e16062b6ce5e90e573e003d88d7a00cbea3ca9e10da0e54210"
+  },
+  {
+    "repo": "MNN/GLM-OCR-MNN",
+    "path": "llm.mnn.weight",
+    "size": 364525654,
+    "sha256": "71017aaf1be71d9ac2630300f89db1cb37a5fd863017bc95799b1fdc2a3a9d01"
+  },
+  {
+    "repo": "MNN/GLM-OCR-MNN",
+    "path": "visual.mnn",
+    "size": 516256,
+    "sha256": "7d78231555814a1d9e4146d62c9b92db6f87483bf1170f76fc16544b427183a5"
+  },
+  {
+    "repo": "MNN/GLM-OCR-MNN",
+    "path": "visual.mnn.weight",
+    "size": 462322458,
+    "sha256": "3b28d1f97a5cc27927deeb14c73f5029019aebc32351ac788ca633ae226aa208"
+  },
+  {
+    "repo": "MNN/GLM-OCR-MNN",
+    "path": "tokenizer.txt",
+    "size": 592462,
+    "sha256": "c3823c73bda8910d027b26cedec0d703aa0a1f342ce6ce503eb74b7e8b776431"
+  },
+  {
+    "repo": "MNN/GLM-OCR-MNN",
+    "path": "embeddings_bf16.bin",
+    "size": 182452224,
+    "sha256": "b8dbafc308854bb52ff5f9f0b852b6e58dfe54b1a2f3490d2299ad278601f603"
+  },
+  {
+    "repo": "MNN/GLM-OCR-MNN",
+    "path": "export_args.json",
+    "size": 1032,
+    "sha256": "e7c8a5d731ae629b48e28e761484b7b7c60c1938865805ad3161c4ee30aa536f"
+  }
+]

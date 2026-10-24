@@ -21,15 +21,47 @@ android {
         applicationId "com.doclayout.recognize"
         minSdk 26
         targetSdk 35
-        versionCode 1
-        versionName "1.0"
+        versionCode 2
+        versionName "1.1.0"
 
-        // RaTeX 的 AAR 带三套 .so，只保留真机 + 模拟器两套
-        ndk { abiFilters 'arm64-v8a', 'x86_64' }
+        // mnn_prebuilt.cmake 对 ABI 精确匹配，预编译 MNN 只提供 arm64-v8a（真机）；
+        // RaTeX AAR 的 x86_64/v7a .so 被 abiFilters 自动过滤，APK 反而更小。
+        ndk { abiFilters 'arm64-v8a' }
+
+        // 端侧流水线原生构建参数，对齐 suishou-ocr-android/app/build.gradle 的 defaultConfig：
+        // c++_shared 运行库 + Release 优化（CMakeLists.txt 内部也强制 Release，与 APK buildType 独立）；
+        // DOCOCR_SOURCE_ROOT 指向仓库根的 native/docprase 源码快照；MNN 用仓库内预编译库，不编译 MNN 源码。
+        externalNativeBuild {
+            cmake {
+                arguments '-DANDROID_STL=c++_shared',
+                          '-DCMAKE_BUILD_TYPE=Release',
+                          "-DDOCOCR_SOURCE_ROOT=${rootProject.file('native/docprase').absolutePath}",
+                          '-DMNN_USE_PREBUILT=ON',
+                          // 限并行：16GB 内存机器上 ninja 默认按逻辑核数并行，clang++ -O3 全开有打爆风险
+                          // （CMake/Ninja 标准机制：压到 6 路编译、2 路链接；单引号串里分号不用转义）
+                          '-DCMAKE_JOB_POOL_COMPILE=compile',
+                          '-DCMAKE_JOB_POOLS=compile=6;link=2'
+                cppFlags '-O3'
+                targets 'dococr_jni'
+            }
+        }
 
         // 预置 Access Token：设置页里没填过时用它兜底（见 OcrSettingsStore.credential）。
         // 值来自 local.properties 的 ocr.token，仓库里看不到明文。
         buildConfigField "String", "OCR_TOKEN", "\"${localProps.getProperty('ocr.token', '')}\""
+    }
+
+    // mnn_prebuilt.cmake 读 NDK source.properties 逐段精确比对，版本不符 configure 直接失败；
+    // 本机 SDK 实测含 NDK 28.1.13356709 与 CMake 3.31.6。
+    ndkVersion '28.1.13356709'
+
+    // 原生构建入口。cpp/CMakeLists.txt 以「cpp 目录上溯 4 层」推导仓库根，
+    // 本项目 app/src/main/cpp 布局与源项目同构，CMake 零路径改动。
+    externalNativeBuild {
+        cmake {
+            path file('src/main/cpp/CMakeLists.txt')
+            version '3.31.6'
+        }
     }
 
     buildTypes {
@@ -49,7 +81,19 @@ android {
         // AGP 8 起 BuildConfig 默认不生成，要显式打开（上面的 buildConfigField 依赖它）
         buildConfig = true
     }
+
+    packaging {
+        // MNN（c++_shared）、RaTeX 等都可能带 libc++_shared.so，重名时取第一个，避免打包冲突；
+        // 当前 RaTeX AAR 实测不含该库，此条零成本预留给将来引入 OpenCV。
+        jniLibs {
+            pickFirsts += ['**/libc++_shared.so']
+        }
+    }
 }
+
+// 四个 MNN 预编译 .so（libMNN/libMNN_Express/libMNNOpenCV/libllm）不走 CMake，
+// 直接把这个目录交给 AGP 打包进 APK（对齐源 app/build.gradle 的 jniLibs.srcDir）。
+android.sourceSets.main.jniLibs.srcDir(rootProject.file('native/mnn-prebuilt/lib'))
 
 dependencies {
     implementation 'androidx.core:core-ktx:1.13.1'

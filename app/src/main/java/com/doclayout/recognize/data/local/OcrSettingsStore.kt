@@ -12,18 +12,33 @@ import com.doclayout.recognize.data.remote.OcrVlApi
  * 真上生产应该走 EncryptedSharedPreferences 或干脆放到自己的服务端换临时票据。
  */
 
-/** 识别走哪儿：云端星河社区异步接口 / 本地自建 PaddleX 服务 */
+/** 识别走哪儿：云端星河社区异步接口 / 本地自建 PaddleX 服务 / 端侧本地流水线（MNN） */
 enum class OcrMode(val label: String) {
     Cloud("云端 · 星河社区"),
     Local("本地 · PaddleX"),
+    OnDevice("端侧 · 本地流水线"),
 }
 
 class OcrSettingsStore(context: Context) {
     private val sp = context.getSharedPreferences("ocr_vl", Context.MODE_PRIVATE)
 
+    /** 引擎门面只在这几处同步读取时才可能被首次初始化（懒加载单例） */
+    private val appContext = context.applicationContext
+
     var mode: OcrMode
-        get() = if (sp.getString("mode", "cloud") == "local") OcrMode.Local else OcrMode.Cloud
-        set(v) = sp.edit().putString("mode", if (v == OcrMode.Local) "local" else "cloud").apply()
+        get() = when (sp.getString("mode", "cloud")) {
+            "local" -> OcrMode.Local
+            "device" -> OcrMode.OnDevice
+            else -> OcrMode.Cloud
+        }
+        set(v) = sp.edit().putString(
+            "mode",
+            when (v) {
+                OcrMode.Cloud -> "cloud"
+                OcrMode.Local -> "local"
+                OcrMode.OnDevice -> "device"
+            },
+        ).apply()
 
     /** 服务根地址。云端是固定域名；本地一般是 http://127.0.0.1:8080 或局域网 IP */
     var baseUrl: String
@@ -50,17 +65,29 @@ class OcrSettingsStore(context: Context) {
         }
         set(v) = sp.edit().putString("credential", v.trim()).apply()
 
-    /** 云端必须有 Token；本地服务通常不鉴权，地址填了就算配好 */
+    /**
+     * 云端必须有 Token；本地服务通常不鉴权，地址填了就算配好；
+     * 端侧没有地址/Token 的概念，"配好"= **模型文件就绪**（经 [LocalOcrEngine] 查引擎
+     * readiness 快照的 files-ready）。
+     */
     val configured: Boolean
         get() = when (mode) {
             OcrMode.Cloud -> credential.isNotBlank()
             OcrMode.Local -> baseUrl.isNotBlank()
+            // RecognitionController.readiness() 是纯内存快照（无磁盘 IO），同步读不卡主线程；
+            // 引擎尚未初始化/快照解析失败按"未就绪"处理。
+            OcrMode.OnDevice -> runCatching {
+                LocalOcrEngine.get(appContext).readinessSnapshot().filesReady
+            }.getOrDefault(false)
         }
 
     companion object {
         fun defaultBaseFor(mode: OcrMode) = when (mode) {
             OcrMode.Cloud -> OcrVlApi.DEFAULT_BASE
             OcrMode.Local -> OcrVlApi.DEFAULT_LOCAL_BASE
+            // 端侧识别完全不经过 HTTP 服务，没有"服务地址"的概念，给空串；
+            // OcrApp.onModeChange 对端侧会跳过默认地址写入（无地址可跟）
+            OcrMode.OnDevice -> ""
         }
     }
 }

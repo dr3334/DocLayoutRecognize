@@ -1,0 +1,24 @@
+#pragma once
+namespace dococr {
+inline constexpr const char* document_schema_1_0 = @DOCUMENT_SCHEMA_1_0_LITERALS@;
+inline constexpr const char* document_schema_1_1 = @DOCUMENT_SCHEMA_1_1_LITERALS@;
+inline constexpr const char* document_schema_1_2 = @DOCUMENT_SCHEMA_1_2_LITERALS@;
+inline constexpr const char* document_schema_1_3 = @DOCUMENT_SCHEMA_1_3_LITERALS@;
+inline constexpr const char* document_schema_1_4 = @DOCUMENT_SCHEMA_1_4_LITERALS@;
+inline constexpr const char* document_schema_1_5_image = @DOCUMENT_SCHEMA_1_5_IMAGE_LITERALS@;
+inline constexpr const char* document_schema_1_5_pdf = @DOCUMENT_SCHEMA_1_5_PDF_LITERALS@;
+inline constexpr const char* document_schema_1_6_image = @DOCUMENT_SCHEMA_1_6_IMAGE_LITERALS@;
+inline constexpr const char* document_schema_1_6_pdf = @DOCUMENT_SCHEMA_1_6_PDF_LITERALS@;
+inline constexpr const char* document_schema_1_7_image = @DOCUMENT_SCHEMA_1_7_IMAGE_LITERALS@;
+inline constexpr const char* document_schema_1_7_pdf = @DOCUMENT_SCHEMA_1_7_PDF_LITERALS@;
+inline constexpr const char* document_schema_1_8_image = @DOCUMENT_SCHEMA_1_8_IMAGE_LITERALS@;
+inline constexpr const char* document_schema_1_8_pdf = @DOCUMENT_SCHEMA_1_8_PDF_LITERALS@;
+inline constexpr const char* document_schema_1_9_image = @DOCUMENT_SCHEMA_1_9_IMAGE_LITERALS@;
+inline constexpr const char* document_schema_1_9_pdf = @DOCUMENT_SCHEMA_1_9_PDF_LITERALS@;
+inline constexpr const char* document_schema_1_10_image = @DOCUMENT_SCHEMA_1_10_IMAGE_LITERALS@;
+inline constexpr const char* document_schema_1_10_pdf = @DOCUMENT_SCHEMA_1_10_PDF_LITERALS@;
+inline constexpr const char* document_schema_1_11_image = @DOCUMENT_SCHEMA_1_11_IMAGE_LITERALS@;
+inline constexpr const char* document_schema_1_11_pdf = @DOCUMENT_SCHEMA_1_11_PDF_LITERALS@;
+inline constexpr const char* document_schema_1_12_image = @DOCUMENT_SCHEMA_1_12_IMAGE_LITERALS@;
+inline constexpr const char* document_schema_1_12_pdf = @DOCUMENT_SCHEMA_1_12_PDF_LITERALS@;
+}

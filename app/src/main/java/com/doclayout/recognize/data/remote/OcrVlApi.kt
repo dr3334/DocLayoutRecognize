@@ -82,6 +82,13 @@ object OcrVlApi {
             }
 
             OcrMode.Local -> parseLocal(baseUrl, token, image)
+
+            // 端侧模式不走任何 HTTP：真分流在 OcrApp.runScan（WP5 起 mode==OnDevice 时逐页走
+            // LocalOcrEngine.recognizeFile，根本不会进 parse）。这里保留兜底拦截，
+            // 防止未来新调用点误把端侧模式当 HTTP 打出去。
+            OcrMode.OnDevice -> throw VlException(
+                "端侧模式不使用 HTTP 服务：请先在「端侧模型」页完成下载，识别走本地流水线（导入文件流程）",
+            )
         }
         page.copy(elapsedMs = System.currentTimeMillis() - started)
     }

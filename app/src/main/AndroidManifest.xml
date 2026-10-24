@@ -1,8 +1,15 @@
 <?xml version="1.0" encoding="utf-8"?>
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
 
-    <!-- 调云端 OCR-VL 需要联网 -->
+    <!-- 调云端 OCR-VL 需要联网；本地引擎模型从 ModelScope 下载也走网络 -->
     <uses-permission android:name="android.permission.INTERNET" />
+    <!-- 检测网络可用性/是否计费流量（DownloadService.checkNetwork） -->
+    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+    <!-- 模型下载前台服务（DownloadService，dataSync 类型） -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
+    <!-- Android 13+ 显示模型下载进度通知需要运行时请求 -->
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
 
     <!-- 拍照：用的是系统相机（TakePicture 契约），不需要 CAMERA 权限。
          但 Android 11+ 的包可见性要求声明 <queries>，否则 resolveActivity 会返回 null -->
@@ -39,5 +46,18 @@
                 android:name="android.support.FILE_PROVIDER_PATHS"
                 android:resource="@xml/file_paths" />
         </provider>
+
+        <!-- ===== 本地识别引擎（移植自 suishou-ocr-android，包 cn.local.ocr）===== -->
+        <!-- 模型下载前台服务：dataSync 类型 + 断点续传/SHA-256 校验 -->
+        <service
+            android:name="cn.local.ocr.DownloadService"
+            android:exported="false"
+            android:foregroundServiceType="dataSync" />
+        <!-- 独立 :ocr 进程跑端侧推理：杀进程即可取消识别、内存/崩溃与主进程隔离
+            （status 大快照走同 UID 缓存文件旁路 Binder 64KB 上限，依赖双进程同 UID） -->
+        <service
+            android:name="cn.local.ocr.RecognitionService"
+            android:process=":ocr"
+            android:exported="false" />
     </application>
 </manifest>
