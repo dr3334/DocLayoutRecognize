@@ -26,10 +26,14 @@
         android:usesCleartextTraffic="true"
         android:theme="@android:style/Theme.Material.Light.NoActionBar">
 
+        <!-- 不再声明 configChanges：旋转/折叠统一走 Activity 重建，Compose 状态靠
+             rememberSaveable 恢复（旧写法旋转被硬扛、折叠却重建，两条路径行为分裂，
+             折叠时正在跑的识别界面全丢）。windowSoftInputMode=adjustResize 让
+             WindowInsets.ime 正确联动，输入框弹窗不被键盘遮挡。 -->
         <activity
             android:name=".MainActivity"
             android:exported="true"
-            android:configChanges="orientation|screenSize|keyboardHidden">
+            android:windowSoftInputMode="adjustResize">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />

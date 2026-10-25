@@ -3,14 +3,12 @@
 package com.doclayout.recognize.ui
 
 import androidx.compose.ui.graphics.graphicsLayer
-import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.foundation.clickable
-import androidx.compose.animation.core.animateDpAsState
 import androidx.compose.animation.core.tween
-import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.ui.draw.clipToBounds
+import androidx.compose.runtime.saveable.Saver
 import com.doclayout.recognize.ui.theme.LocalOcrColors
 import com.doclayout.recognize.data.local.OcrMode
 import com.doclayout.recognize.data.local.OcrSettingsStore
@@ -64,6 +62,7 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.layout.layout
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.unit.dp
@@ -110,6 +109,12 @@ private sealed interface ScanState {
     data class Running(val done: Int, val total: Int, val label: String) : ScanState
     data class Failed(val message: String) : ScanState
 }
+
+/** List<Uri> 的 Saver：Uri 可转字符串往返（rememberSaveable 用） */
+private val uriListSaver = Saver<List<Uri>?, List<String>>(
+    save = { it.orEmpty().map(Uri::toString) },
+    restore = { saved -> saved.map(Uri::parse).ifEmpty { null } },
+)
 
 /** runScan 的一页输入：识别用的临时页文件（PDF 已先栅格化成页 PNG，与图片页同构） */
 private data class PageInput(val file: File)
@@ -183,9 +188,14 @@ fun OcrApp(
         mutableIntStateOf(startRecord.coerceIn(0, sampleRecords.lastIndex))
     }
     var scanState by remember { mutableStateOf<ScanState>(ScanState.Idle) }
-    // 一次选进来的图，等用户确认"合并 / 分开"后再开跑
-    var pendingUris by remember { mutableStateOf<List<Uri>?>(null) }
-    var camUri by remember { mutableStateOf<Uri?>(null) }
+    // 一次选进来的图，等用户确认"合并 / 分开"后再开跑。
+    // saveable：进程回收/重建后选图会话不凭空消失（pendingPdf 是 Parcelable 直接存）；
+    // scanState 刻意保持 remember —— runScan 协程随进程重建而死，恢复"识别中"假状态
+    // 反而会把弹窗卡死，完整会话接续留待 ViewModel 化
+    var pendingUris by rememberSaveable(stateSaver = uriListSaver) {
+        mutableStateOf<List<Uri>?>(null)
+    }
+    var camUri by rememberSaveable { mutableStateOf<Uri?>(null) }
 
     LaunchedEffect(Unit) { scanned = store.list() }
 
@@ -220,17 +230,29 @@ fun OcrApp(
 
     SideEffect {
         val window = (view.context as? Activity)?.window ?: return@SideEffect
-        WindowCompat.getInsetsController(window, view).isAppearanceLightStatusBars = !dark
+        val controller = WindowCompat.getInsetsController(window, view)
+        // 状态栏与导航栏图标都要跟外观：浅色模式奶油画布上若导航栏图标仍是白的，几乎看不见
+        controller.isAppearanceLightStatusBars = !dark
+        controller.isAppearanceLightNavigationBars = !dark
     }
 
     suspend fun runScan(uris: List<Uri>, merge: Boolean, pdfUri: Uri? = null) {
-        // 端态门槛是磁盘事实（模型文件就绪）。readiness 是内存状态、冷启动恒为 unchecked，
+        // 配置门槛按模式各自判定，不再读 settings.configured —— 它的端侧分支在主线程
+        // 同步调 readinessSnapshot，那把锁与 inference 线程 update()（含 fsync）争用。
+        // 端态门槛是磁盘事实（模型文件就绪）：readiness 是内存状态、冷启动恒为 unchecked，
         // 判定前先做一次磁盘对账把它推到位 —— 否则深链 --es scan 冷启动时门槛会赶在
         // 就绪轮询的第一次对账之前读到过期内存值，模型明明齐全却秒拒。
-        if (settings.mode == OcrMode.OnDevice) {
-            runCatching { ocrEngine.refreshReadiness() }
+        val readiness = if (settings.mode == OcrMode.OnDevice) {
+            runCatching { ocrEngine.refreshReadiness() }.getOrNull()
+        } else {
+            null
         }
-        if (!settings.configured) {
+        val configured = when (settings.mode) {
+            OcrMode.Cloud -> settings.credential.isNotBlank()
+            OcrMode.Local -> settings.baseUrl.isNotBlank()
+            OcrMode.OnDevice -> readiness?.filesReady == true
+        }
+        if (!configured) {
             scanState = ScanState.Failed(
                 when (settings.mode) {
                     OcrMode.Cloud -> "云端模式还没填 Access Token：设置 → 识别服务"
@@ -298,7 +320,9 @@ fun OcrApp(
                         mode = settings.mode,
                         baseUrl = settings.baseUrl,
                         token = settings.credential,
-                        image = page.file.readBytes(),
+                        // 传 File 让读文件的 IO 落在 Dispatchers.IO（ByteArray 版会在
+                        // 主线程协程里先把数 MB 文件整读一遍才进 withContext）
+                        imageFile = page.file,
                         model = settings.model,
                     )
                     elapsed += pageResult.elapsedMs
@@ -373,9 +397,14 @@ fun OcrApp(
     }
 
     // 调试通道：adb 直接指定一张本应用可读的图片（或一份 PDF），跳过相册/文件选择。
-    // PDF 按扩展名识别：栅格化成页 PNG 后整卷合并（见 runScan 的 pdfUri 分支）
+    // PDF 按扩展名识别：栅格化成页 PNG 后整卷合并（见 runScan 的 pdfUri 分支）。
+    // 消费标志必须 saveable：删除 configChanges 后旋转重建 Activity，intent extra
+    // 会原样重投 —— 普通 remember 挡不住第二次组合重放深链（云端重复提交任务）
+    var startScanConsumed by rememberSaveable { mutableStateOf(false) }
     LaunchedEffect(startScanPath) {
-        val path = startScanPath ?: return@LaunchedEffect
+        val path = startScanPath
+        if (path == null || startScanConsumed) return@LaunchedEffect
+        startScanConsumed = true
         val file = File(path)
         if (!file.exists()) {
             scanState = ScanState.Failed("找不到调试图片：$path")
@@ -395,7 +424,8 @@ fun OcrApp(
 
     // PDF 试卷选择（WP5）：Photo Picker 只认图片，试卷 PDF 一般在下载/文件目录，
     // 走 OpenDocument("application/pdf") 单选一份。OpenDocument 不需要存储权限。
-    var pendingPdf by remember { mutableStateOf<Uri?>(null) }
+    // Uri 是 Parcelable，直接进 saveable
+    var pendingPdf by rememberSaveable { mutableStateOf<Uri?>(null) }
     val pickPdf = rememberLauncherForActivityResult(
         ActivityResultContracts.OpenDocument(),
     ) { uri -> if (uri != null) pendingPdf = uri }
@@ -431,10 +461,10 @@ fun OcrApp(
     }
 
     CompositionLocalProvider(LocalOcrColors provides colors) {
-        // 面板宽度驱动一切：主界面右侧让出 panelW，面板贴右边长出来。
-        // 用 BoxWithConstraints 是因为宽度要按 maxWidth 的 75% 算。
-        BoxWithConstraints(Modifier.fillMaxSize().background(colors.canvas)) {
-            val panelTarget = maxWidth * 0.75f
+        // 面板动画只改 translationX / alpha（纯绘制变换），不改宽度/显隐：
+        // 每帧 reposition 不重组整树。panelSlide / scrimAlpha 都是 State，
+        // 在 graphicsLayer（Draw 阶段）里读，动画期间只重绘不重组。
+        Box(Modifier.fillMaxSize().background(colors.canvas)) {
             // 动画只改 translationX（纯绘制变换），不改宽度。
             // 改宽度的话每一帧都要重新 measure/layout 整个设置列表（30 个 SettingRow + Switch），
             // 打开时会一顿一顿；平移只改图层，不触发测量。
@@ -443,7 +473,6 @@ fun OcrApp(
                 animationSpec = tween(durationMillis = 260),
                 label = "settingsPanel",
             )
-            val panelOffsetPx = with(LocalDensity.current) { panelTarget.toPx() } * (1f - panelSlide)
             val scrimAlpha by animateFloatAsState(
                 targetValue = if (settingsOpen) 1f else 0f,
                 animationSpec = tween(durationMillis = 260),
@@ -502,27 +531,27 @@ fun OcrApp(
 
             // ── 右侧设置面板
             // 不是覆盖式抽屉，也不是贴底 sheet：主界面被压到左边 1/4，面板自己占 3/4。
-            // 宽度用 animateDpAsState 而不是 AnimatedVisibility：后者是整体淡入淡出，
-            // 拿不到"被逐渐拉开"的过程，主界面也不会跟着缩。
+            // 宽度走 settingsPanelWidth（measure 期算 75% 且封顶 480dp，平板/横屏不再占 960dp+），
             // 主界面保持原比例，只盖一层暗色 —— 面板是"覆盖"，不是"挤压"。
             // 点暗处关闭，手感和 ModalBottomSheet 的 scrim 一致。
-            if (scrimAlpha > 0f) {
-                Box(
-                    Modifier
-                        .fillMaxSize()
-                        .background(colors.scrim.copy(alpha = 0.30f * scrimAlpha))
-                        .clickable { settingsOpen = false },
-                )
-            }
+            // scrim 常驻组合、透明度走 Draw 阶段：旧写法 if(scrimAlpha>0) + copy(alpha)
+            // 在动画期间每帧重组并新建 Color
+            Box(
+                Modifier
+                    .fillMaxSize()
+                    .graphicsLayer { alpha = if (scrimAlpha > 0.01f) 0.30f * scrimAlpha else 0f }
+                    .background(colors.scrim)
+                    .clickable(enabled = settingsOpen) { settingsOpen = false },
+            )
 
             // 面板始终挂着（收起时只是平移到屏幕外）：否则第一次打开要现组合 30 个设置行，
             // 会有一下明显的停顿；组合过一次之后就一直复用。
             Box(
                 modifier = Modifier
                     .align(Alignment.CenterEnd)
-                    .width(panelTarget)
                     .fillMaxHeight()
-                    .graphicsLayer { translationX = panelOffsetPx }
+                    .settingsPanelWidth()
+                    .graphicsLayer { translationX = size.width * (1f - panelSlide) }
                     .clipToBounds()
                     .background(colors.canvas),
             ) {
@@ -619,10 +648,22 @@ fun OcrApp(
     }
 }
 
+/**
+ * 设置面板宽度修饰符：父宽的 75% 且封顶 480dp（横屏/平板下固定 75% 会占 960dp+，
+ * 抽屉盖过内容就失去"面板"的感觉）。宽度在 measure 期算，不经过组合，
+ * 也就不需要 BoxWithConstraints —— 旧写法面板动画期间每帧重组整树就是它带进来的。
+ */
+private fun Modifier.settingsPanelWidth(): Modifier = layout { measurable, constraints ->
+    val w = ((constraints.maxWidth * 0.75f).toInt())
+        .coerceAtMost(480.dp.roundToPx())
+        .coerceAtLeast(1)
+    val p = measurable.measure(constraints.copy(minWidth = w, maxWidth = w))
+    layout(p.width, p.height) { p.placeRelative(0, 0) }
+}
+
 /** 识别进度 / 失败提示 */
 @Composable
-private fun ScanOverlay(state: ScanState, onDismiss: () -> Unit, onOpenSettings: () -> Unit) {
-    val c = Ocr.colors
+private fun ScanOverlay(state: ScanState, onDismiss: () -> Unit, onOpenSettings: () -> Unit) {    val c = Ocr.colors
     when (state) {
         ScanState.Idle -> Unit
 

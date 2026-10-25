@@ -11,7 +11,6 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectDragGestures
 import androidx.compose.foundation.layout.Box
-import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -37,7 +36,8 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.input.pointer.pointerInput
-import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.layout.Layout
+import androidx.compose.ui.layout.layoutId
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -55,15 +55,15 @@ import kotlin.math.roundToInt
  * 1. **宽度用「比例」而不是「像素」存**。fraction 只在 0..1 之间，
  *    转屏、分屏、换密度都不用重新算，两个面板永远撑满。
  *
- * 2. **拖动跟手，松手吸附**。拖动时直接改 fraction（每帧重组，跟指）；
+ * 2. **拖动跟手，松手吸附**。拖动时直接改 fraction（每帧 remeasure，跟指）；
  *    松手后用 spring 动画吸到最近的锚点上，而不是"松手瞬间跳变"。
  *    锚点默认 {0, 0.25, 0.5, 0.75, 1} —— 也就是 0:1 / 1:3 / 1:1 / 3:1 / 1:0 五档，
  *    其中 0 和 1 就是你说的"一侧完全占据"。
  *
  * 3. **不用 anchoredDraggable**。它适合"少量固定位置 + 强吸附"的开关型交互，
  *    但这里要的是连续跟手、松手才吸附；自己拿 detectDragGestures + Animatable 更直接，
- *    也不用吃 ExperimentalFoundationApi。分栏两侧的 0 宽度用「不组合」兜住，
- *    否则会带着 0 宽度去测子布局（纸面那个 BoxWithConstraints 会算出负宽度）。
+ *    也不用吃 ExperimentalFoundationApi。分栏两侧的 0 宽度用「不测量不放置」兜住
+ *    （内容保留在组合中，见 ResizableRow 的注释）。
  */
 
 /** 默认吸附档位：0:1 / 1:3 / 1:1 / 3:1 / 1:0 */
@@ -164,8 +164,12 @@ fun rememberSplitPaneState(
 /**
  * 左右分栏。
  *
- * @param left 左面板，拿到的是「已经算好宽度的 Modifier」，直接 .fillMaxHeight() 用
- * @param right 右面板
+ * 宽度分配走自定义 [Layout]：fraction 在 measure 阶段读取，拖动每帧只触发
+ * remeasure，不再重组整个分栏内容（左栏 Pager+位图、右栏 WebView 的 skip 检查每帧都跑）。
+ *
+ * @param left 左面板，收到的 Modifier 已在测量阶段被固定宽度，**必须透传给内容根节点**
+ *             （否则内容不消费固定宽度约束，高度会塌陷）
+ * @param right 右面板，同上
  */
 @Composable
 fun ResizableRow(
@@ -175,28 +179,41 @@ fun ResizableRow(
     left: @Composable (Modifier) -> Unit,
     right: @Composable (Modifier) -> Unit,
 ) {
-    BoxWithConstraints(modifier) {
-        val density = LocalDensity.current
-        val usable = (maxWidth - dividerWidth).coerceAtLeast(0.dp)
-        // 手指移动的像素要换算成"比例"：除以可用宽度
-        val usablePx = with(density) { usable.toPx() }.coerceAtLeast(1f)
+    // 拖动位移换算用的可用宽度：组合期拿不到（宽度 measure 才知道），
+    // 测量期写入、SplitDivider 的拖动回调里读取
+    val usablePxState = remember { mutableFloatStateOf(1f) }
+    Layout(
+        content = {
+            Box(Modifier.layoutId("left")) { left(Modifier.fillMaxSize()) }
+            Box(Modifier.layoutId("divider")) {
+                SplitDivider(state, usablePxState.floatValue, dividerWidth)
+            }
+            Box(Modifier.layoutId("right")) { right(Modifier.fillMaxSize()) }
+        },
+        modifier = modifier,
+    ) { measurables, constraints ->
+        // ← 这里读 state.fraction：Layout 阶段读 State 只触发 remeasure 不触发重组
+        val dividerPx = dividerWidth.roundToPx()
+        val usable = (constraints.maxWidth - dividerPx).coerceAtLeast(0)
         val f = state.fraction
-        val leftWidth = usable * f
-        val rightWidth = usable * (1f - f)
-
-        Row(Modifier.fillMaxSize()) {
-            // 0 宽度时不组合子内容：既省一次布局，也避免子组件拿到 0/负约束
-            if (leftWidth > 1.dp) {
-                left(Modifier.width(leftWidth).fillMaxHeight())
-            }
-            SplitDivider(
-                state = state,
-                usablePx = usablePx,
-                width = dividerWidth,
-            )
-            if (rightWidth > 1.dp) {
-                right(Modifier.width(rightWidth).fillMaxHeight())
-            }
+        val leftPx = (usable * f).roundToInt()
+        val rightPx = usable - leftPx
+        usablePxState.floatValue = usable.toFloat().coerceAtLeast(1f)
+        // 0 宽度时不测量不放置（内容保留在组合中）：收起侧的 remember 状态
+        // （Pager 页码、已解码位图）由旧版"不组合即丢弃"变成"保留"，属良性差异；
+        // 两侧都是固定宽度约束，子组件不可能拿到 0/负约束，无需再防御
+        val leftPlaceable = measurables.first { it.layoutId == "left" }
+            .takeIf { leftPx > 1 }
+            ?.measure(constraints.copy(minWidth = leftPx, maxWidth = leftPx))
+        val dividerPlaceable = measurables.first { it.layoutId == "divider" }
+            .measure(constraints.copy(minWidth = dividerPx, maxWidth = dividerPx))
+        val rightPlaceable = measurables.first { it.layoutId == "right" }
+            .takeIf { rightPx > 1 }
+            ?.measure(constraints.copy(minWidth = rightPx, maxWidth = rightPx))
+        layout(constraints.maxWidth, constraints.maxHeight) {
+            leftPlaceable?.placeRelative(0, 0)
+            dividerPlaceable.placeRelative(leftPx, 0)
+            rightPlaceable?.placeRelative(leftPx + dividerPx, 0)
         }
     }
 }

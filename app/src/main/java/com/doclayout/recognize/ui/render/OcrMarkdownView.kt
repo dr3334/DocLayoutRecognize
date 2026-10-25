@@ -5,6 +5,8 @@ import com.doclayout.recognize.ui.theme.Ocr
 import com.doclayout.recognize.ui.theme.OcrType
 import android.annotation.SuppressLint
 import android.graphics.Color
+import android.os.Handler
+import android.os.Looper
 import android.util.Log
 import android.webkit.ConsoleMessage
 import android.webkit.JavascriptInterface
@@ -141,16 +143,21 @@ fun OcrMarkdownView(
 /**
  * JS → Kotlin 的桥。方法名必须和 render.html 里 window.Android.onXxx 对上。
  * 只挂两个：onHeight（内容高度，目前只打日志）和 onBlockTap（点正文回传区域 id）。
+ *
+ * WebView 的 JavaBridge 回调跑在**专用线程**上，不切回主线程就直接写 Compose 状态 /
+ * ClipboardManager：快照写虽然线程安全，但部分 ROM 的剪贴板实现有主线程假设，线程卫生欠佳。
  */
 private class AndroidBridge(
     private val onHeightSink: (Int) -> Unit,
     private val onBlockTapSink: (String) -> Unit,
 ) {
-    @JavascriptInterface
-    fun onHeight(h: Int) = onHeightSink(h)
+    private val main = Handler(Looper.getMainLooper())
 
     @JavascriptInterface
-    fun onBlockTap(id: String) = onBlockTapSink(id)
+    fun onHeight(h: Int) = main.post { onHeightSink(h) }
+
+    @JavascriptInterface
+    fun onBlockTap(id: String) = main.post { onBlockTapSink(id) }
 }
 
 /** 复制按钮用：把多页 markdown 拼成一份，页间用分隔线，方便直接粘到笔记里 */

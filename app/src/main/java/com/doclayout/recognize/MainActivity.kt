@@ -1,9 +1,12 @@
 package com.doclayout.recognize
 
+import com.doclayout.recognize.data.local.LocalOcrEngine
 import com.doclayout.recognize.ui.OcrApp
+import android.content.ComponentCallbacks2
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
+import androidx.activity.enableEdgeToEdge
 import androidx.compose.material3.MaterialTheme
 
 /**
@@ -30,6 +33,9 @@ import androidx.compose.material3.MaterialTheme
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        // 窗口延伸到系统栏后面：不调用的话 minSdk 26~34 上内容不绘入状态栏区域，
+        // 浅色主题的深色状态栏底 + OcrApp 画的深色图标 = 图标看不见（API 35+ 才默认延伸）
+        enableEdgeToEdge()
         setContent {
             MaterialTheme {
                 OcrApp(
@@ -45,6 +51,22 @@ class MainActivity : ComponentActivity() {
                     startPipelinePath = intent.getStringExtra("scanpath"),
                 )
             }
+        }
+    }
+
+    /**
+     * 内存压力转发：引擎在 data 层缓存了模型权重，低内存时必须让它主动卸载。
+     * 阈值逐字对齐源项目 suishou-ocr-android 的 MainActivity：刻意**不含**
+     * TRIM_MEMORY_UI_HIDDEN(20) —— 它在每次切后台都会触发，而 onMemoryPressure
+     * 是无条件卸载（回来识别要整轮重新加载模型），不能拿"切了下后台"当内存告急。
+     */
+    override fun onTrimMemory(level: Int) {
+        super.onTrimMemory(level)
+        if (level == ComponentCallbacks2.TRIM_MEMORY_RUNNING_LOW ||
+            level == ComponentCallbacks2.TRIM_MEMORY_RUNNING_CRITICAL ||
+            level >= ComponentCallbacks2.TRIM_MEMORY_BACKGROUND
+        ) {
+            LocalOcrEngine.get(applicationContext).onMemoryPressure()
         }
     }
 }

@@ -10,9 +10,9 @@ import androidx.compose.ui.unit.dp
  * 布局选择（和内容渲染彻底分开）。
  *
  * 判定只用两件事，都是系统给的、不靠猜：
- *   1. `Configuration.orientation` —— 横竖屏的唯一权威来源。Activity 在 Manifest 里
- *      声明了 `configChanges="orientation|screenSize"`，不会重建，但 Configuration 变了
- *      Compose 会重组，所以这里读到的一定是当前值，不需要监听器。
+ *   1. `Configuration.orientation` —— 横竖屏的唯一权威来源。旋转/折叠会重建 Activity
+ *      （Manifest 已不再声明 configChanges），Compose 状态靠 rememberSaveable 恢复；
+ *      Configuration 变化会触发本处重组，读到的始终是当前值，不需要监听器。
  *   2. `screenWidthDp` 落在哪个断点 —— 等价于 material3 的 WindowWidthSizeClass
  *      （Compact <600 / Medium 600-840 / Expanded ≥840）。
  *      加这一条是为了"横屏但是分屏小窗"的情况：只有 520dp 宽还硬分栏，两边都不可用。

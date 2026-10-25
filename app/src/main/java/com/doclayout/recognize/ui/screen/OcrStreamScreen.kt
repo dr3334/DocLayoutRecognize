@@ -1,7 +1,6 @@
 package com.doclayout.recognize.ui.screen
 
 import android.graphics.Bitmap
-import android.graphics.BitmapFactory
 import android.util.Log
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.PickVisualMediaRequest
@@ -19,6 +18,7 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.safeDrawingPadding
 import androidx.compose.foundation.layout.size
@@ -37,7 +37,10 @@ import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.rememberUpdatedState
+import androidx.compose.runtime.saveable.Saver
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -48,6 +51,8 @@ import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.tooling.preview.Devices
+import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.animation.AnimatedVisibility
@@ -68,11 +73,19 @@ import com.doclayout.recognize.data.local.LocalStreamRegion
 import com.doclayout.recognize.data.local.OcrStore
 import com.doclayout.recognize.data.local.OcrStreamDemo
 import com.doclayout.recognize.data.local.OcrStreamExport
+import com.doclayout.recognize.data.local.decodeSampled
+import com.doclayout.recognize.data.local.decodeSampledAsset
 import com.doclayout.recognize.data.model.OcrStreamPage
 import com.doclayout.recognize.ui.component.OcrTopBar
 import com.doclayout.recognize.ui.component.Pill
+import com.doclayout.recognize.ui.layout.OcrLayoutMode
+import com.doclayout.recognize.ui.layout.ResizableRow
+import com.doclayout.recognize.ui.layout.rememberOcrWindowInfo
+import com.doclayout.recognize.ui.layout.rememberSplitPaneState
 import com.doclayout.recognize.ui.render.OcrMarkdownView
+import com.doclayout.recognize.ui.theme.LocalOcrColors
 import com.doclayout.recognize.ui.theme.Ocr
+import com.doclayout.recognize.ui.theme.OcrColors
 import com.doclayout.recognize.ui.theme.OcrType
 import com.doclayout.recognize.ui.theme.Radii
 import com.doclayout.recognize.ui.theme.Space
@@ -145,7 +158,12 @@ fun OcrStreamScreen(
 ) {
     val c = Ocr.colors
     val context = LocalContext.current
-    val demoData = remember(page) { page ?: OcrStreamDemo.load(context) }
+    // 内置样本解析（读+解析 262KB assets JSON）挪到 IO：先复位再异步加载（唯一正确写法），
+    // 加载完成的短暂空窗由各消费端的判空占位兜住
+    val demoData by produceState<OcrStreamPage?>(page, page) {
+        value = page
+        if (page == null) value = withContext(Dispatchers.IO) { OcrStreamDemo.load(context) }
+    }
 
     // ── 真实识别会话（engine == null 时整段休眠，页面行为与纯演示一致）。
     // 状态机三态见 [StreamPhase]：没发起过识别走演示；跑起来后 jobStatus 非空；
@@ -153,14 +171,16 @@ fun OcrStreamScreen(
     val scope = rememberCoroutineScope()
     // 只为复用 stageUri（content Uri → cacheDir 文件）；记录仓库本体是引擎的 documents 目录
     val store = remember { OcrStore(context) }
-    var jobDocId by remember { mutableStateOf<String?>(null) }
-    var jobJobId by remember { mutableStateOf<String?>(null) }
+    // 会话身份走 saveable：重建后 LaunchedEffect(jobDocId) 重新轮询，终态自动 readExport
+    // 回填 recPage，识别 UI 继续跟进。jobStatus/recPage 等轮询快照保持 remember（重新拉）
+    var jobDocId by rememberSaveable { mutableStateOf<String?>(null) }
+    var jobJobId by rememberSaveable { mutableStateOf<String?>(null) }
     var jobStatus by remember { mutableStateOf<LocalJobStatus?>(null) }
     // 流式快照：只在 stream.revision 变化时才写入（见轮询循环），驱动下半区实时重组
     var liveRegions by remember { mutableStateOf<List<LocalStreamRegion>>(emptyList()) }
     var recPage by remember { mutableStateOf<OcrStreamPage?>(null) }
-    var recImagePath by remember { mutableStateOf<String?>(null) }
-    var recFramePath by remember { mutableStateOf<String?>(null) }
+    var recImagePath by rememberSaveable { mutableStateOf<String?>(null) }
+    var recFramePath by rememberSaveable { mutableStateOf<String?>(null) }
     var starting by remember { mutableStateOf(false) }
     var recError by remember { mutableStateOf<String?>(null) }
     val running = jobStatus?.let { it.running && !it.terminal } == true
@@ -177,13 +197,12 @@ fun OcrStreamScreen(
     val ordered = remember(data) { data?.ordered.orEmpty() }
 
     // ── 打字机 / 平滑上屏状态（声明在 runOne 之前：新一轮识别要把它们清零，见下）
-    // playKey/doneText/typing/activeIndex 服务"回放"；liveShownLen 服务"识别中的平滑上屏"
+    // playKey/doneText/typing/activeIndex 服务"回放"；liveShownLen 服务"识别中的平滑上屏"，
+    // 它随下半区一起下沉进了 [StreamBodyPane] —— 26ms 一次的推进只重组下半区
     var playKey by remember { mutableIntStateOf(0) }
     var doneText by remember { mutableStateOf("") }
     var typing by remember { mutableStateOf("") }
     var activeIndex by remember { mutableIntStateOf(-1) }
-    // 识别中"已经显示到第几个字"，追赶循环推进它（见 liveMarkdown 下面的 LaunchedEffect）
-    var liveShownLen by remember { mutableIntStateOf(0) }
     // 终态回放是否进行中：false 时下半区直接给终稿全文，不逐字
     var replaying by remember { mutableStateOf(false) }
 
@@ -202,11 +221,12 @@ fun OcrStreamScreen(
                 }
                 // 新一轮：清上一轮展示状态，回到识别中形态。
                 // playKey 归零很关键：终态靠 playKey==0 判断"本轮没按过重播 → 正文已经
-                // 流式放过一遍，直接展示终稿"；不归零的话第二轮完成还会整屏重打
+                // 流式放过一遍，直接展示终稿"；不归零的话第二轮完成还会整屏重打。
+                // liveShownLen 的清零在 StreamBodyPane 里：liveMarkdown 变空时自动归零
                 recImagePath = file.absolutePath
                 jobDocId = null; jobJobId = null; jobStatus = null
                 liveRegions = emptyList(); recPage = null; recFramePath = null
-                liveShownLen = 0; playKey = 0
+                playKey = 0
                 // createInput 落盘记录并 autoStart；再显式 start 一次兜住"只落盘没启动"的分支
                 val summary = eng.createInput(title = OcrStore.titleFor(1), image = file)
                 jobDocId = summary.id
@@ -250,10 +270,14 @@ fun OcrStreamScreen(
         }
     }
 
-    // 深链直达：--ei ocr 6 --es scanpath <应用可读路径>（OcrApp 没实现 onNewIntent，先 force-stop）
+    // 深链直达：--ei ocr 6 --es scanpath <应用可读路径>（OcrApp 没实现 onNewIntent，先 force-stop）。
+    // 消费标志必须 saveable：旋转重建后 intent extra 原样重投，不挡住就会重复 createInput
+    var initialPathConsumed by rememberSaveable { mutableStateOf(false) }
     LaunchedEffect(initialPath) {
         if (engine == null) return@LaunchedEffect
-        val path = initialPath ?: return@LaunchedEffect
+        val path = initialPath
+        if (path == null || initialPathConsumed) return@LaunchedEffect
+        initialPathConsumed = true
         val file = File(path)
         if (!file.isFile) recError = "找不到图片：$path" else runOne(file)
     }
@@ -280,12 +304,17 @@ fun OcrStreamScreen(
 
     // ── 顺序修正：模型最容易出错的地方（reading_order 会把某一段排到别处）
     // customOrder = null 表示没动过，用模型给的顺序；否则是调整后的 id 序列。
+    // 调好的顺序走 saveable：进程回收后清空等于让用户白调。
     //
     // 注意：**只改顺序，不碰框**。框的位置、大小、数量全部保持模型原样 ——
     // 框偏了是模型自身的问题，属于事实，界面不该悄悄"修好"它，只把它当定位提示用。
-    var customOrder by remember { mutableStateOf<List<String>?>(null) }
+    var customOrder by rememberSaveable(stateSaver = CustomOrderSaver) {
+        mutableStateOf<List<String>?>(null)
+    }
     // 撤销栈：每次调序前压一份快照（上限 30）。撤销 = 弹回上一张，不用写反向操作。
-    var history by remember { mutableStateOf<List<List<String>?>>(emptyList()) }
+    var history by rememberSaveable(stateSaver = OrderHistorySaver) {
+        mutableStateOf<List<List<String>?>>(emptyList())
+    }
     // 按住连发期间为 true：整串只压一个撤销点（否则按住 3 秒要按 30 次撤销）
     var holding by remember { mutableStateOf(false) }
 
@@ -302,7 +331,8 @@ fun OcrStreamScreen(
     }
 
     // 上下联动 + 区域合并：选中的是一组 id。连续点几个块 = 多选，原图按并集画一个大框
-    var selectedIds by remember { mutableStateOf<Set<String>>(emptySet()) }
+    // （LinkedHashSet 可序列化，直接进 saveable）
+    var selectedIds by rememberSaveable { mutableStateOf<Set<String>>(emptySet()) }
     // 长按拖动时的临时范围（空 = 没在拖）。拖动中用它做预览，松手才提交
     var dragAnchor by remember { mutableStateOf<Int?>(null) }
     var dragRange by remember { mutableStateOf<Set<String>>(emptySet()) }
@@ -370,36 +400,16 @@ fun OcrStreamScreen(
             .joinToString("\n\n")
     }
 
-    // ── 平滑上屏（追赶式打字机）：引擎每 400ms 轮询回来一批新字，直接整段上屏就是
-    // "突然蹦出一坨"。liveShownLen 记录"已经显示到第几个字"，本循环每 26ms 推进一步去追
-    // liveMarkdown.length：积压越多一步走得越远（约 1/12，对数式收敛，一大段约 1 秒铺完），
-    // 快追上时一步只走 1 个字 —— 远看整段滑入，近看逐字打出，且永远追得上生成速度。
-    LaunchedEffect(liveMarkdown, phase) {
-        if (phase != StreamPhase.Recognizing) return@LaunchedEffect
-        while (liveShownLen < liveMarkdown.length) {
-            val remaining = liveMarkdown.length - liveShownLen
-            liveShownLen += ((remaining + 11) / 12).coerceIn(1, 24)
-            delay(26) // 与演示打字机同节奏：这是 WebView 刷得动的上限（见文件头注释）
-        }
-    }
-
-    // 识别中实际喂 WebView 的是 liveMarkdown 的前 liveShownLen 个字（末尾若劈开了
-    // 代理对字符就让一位，避免 emoji / 生僻字显示成乱码），结尾跟一个假光标 "▌"：
-    // "正在打字"的观感由它和 26ms 步进一起给出来，终态自动消失。
-    val liveShown = run {
-        var end = liveShownLen.coerceAtMost(liveMarkdown.length)
-        if (end in 1 until liveMarkdown.length && Character.isHighSurrogate(liveMarkdown[end - 1])) end--
-        liveMarkdown.substring(0, end) + if (running) " ▌" else ""
-    }
-
     // 终稿全文（带锚点、按当前生效顺序）：三个用途 —— 调序后立即重建（逐字累积的
     // doneText 是旧序拼的，改不了）；真实识别完成直接展示终稿（不整屏清空重打）；
     // 回放结束后的兜底。没调过序时它正好等于回放完成时的 doneText，行为不变。
     val fullMarkdown = remember(blocksNow) {
         blocksNow.joinToString("\n\n") { "@@blk:${it.id}@@\n${OcrStreamDemo.toMarkdown(it)}" }
     }
-    val shown = when (phase) {
-        StreamPhase.Recognizing -> liveShown
+    // 下半区正文的三态选择（识别中的 liveShown 前缀在 StreamBodyPane 内算 ——
+    // 那里才有逐帧推进的 liveShownLen）：这里只依赖 phase/replaying/customOrder
+    // 这些低频离散状态，留在父级没有逐帧成本
+    val finalMarkdown = when (phase) {
         StreamPhase.Done -> if (replaying) streamed else fullMarkdown
         else -> if (customOrder != null && !replaying) fullMarkdown else streamed
     }
@@ -542,215 +552,119 @@ fun OcrStreamScreen(
             )
         }
 
-        // ── 上半：原图 + 当前区域高亮
-        BoxWithConstraints(
-            modifier = Modifier
-                .fillMaxWidth()
-                .weight(1f)
-                .padding(horizontal = Space.md, vertical = Space.xs)
-                .background(c.paper, RoundedCornerShape(Radii.md)),
-        ) {
-            val density = LocalDensity.current
-            val boxW = with(density) { maxWidth.toPx() }
-            val boxH = with(density) { maxHeight.toPx() }
-            // 三种图源：内置样本（演示）/ 用户输入原图（识别中）/ 规范化 source.png（完成，
-            // 它才是 DocumentIR bbox 的坐标系基准）。大图解码都是磁盘 IO，走 produceState + IO 线程。
-            val demoBitmap = remember {
-                runCatching {
-                    context.assets.open(OcrStreamDemo.SOURCE_IMAGE).use { BitmapFactory.decodeStream(it) }
-                }.getOrNull()
+        // ── 三种图源的异步解码：内置样本按相位懒加载（Demo 才解），输入图/规范化图走 IO
+        // —— 规范化 source.png 才是 DocumentIR bbox 的坐标系基准。原写法 demoBitmap 在
+        // 组合期全尺寸解码 source.jpg（无采样），统一成 produceState + IO。
+        val demoBitmap by produceState<Bitmap?>(null, phase) {
+            if (phase == StreamPhase.Demo) {
+                value = decodeSampledAsset(context, OcrStreamDemo.SOURCE_IMAGE, 2048)
             }
-            val inputBitmap by produceState<Bitmap?>(null, recImagePath) {
-                val p = recImagePath
-                if (p != null) value = withContext(Dispatchers.IO) { decodeImageScaled(p, 2048) }
-            }
-            val frameBitmap by produceState<Bitmap?>(null, recFramePath) {
-                val p = recFramePath
-                if (p != null) value = withContext(Dispatchers.IO) { decodeImageScaled(p, 2048) }
-            }
-            val bitmap = when (phase) {
-                StreamPhase.Done -> frameBitmap
-                StreamPhase.Recognizing -> inputBitmap
-                StreamPhase.Demo -> demoBitmap
-            }
-            // 序号测量器：只在 SHOW_BLOCK_INDEX 打开时才会被调用，默认不影响性能
-            val indexMeasurer = rememberTextMeasurer()
+        }
+        val inputBitmap by produceState<Bitmap?>(null, recImagePath) {
+            val p = recImagePath
+            if (p != null) value = withContext(Dispatchers.IO) { decodeSampled(p, 2048) }
+        }
+        val frameBitmap by produceState<Bitmap?>(null, recFramePath) {
+            val p = recFramePath
+            if (p != null) value = withContext(Dispatchers.IO) { decodeSampled(p, 2048) }
+        }
+        val bitmap = when (phase) {
+            StreamPhase.Done -> frameBitmap
+            StreamPhase.Recognizing -> inputBitmap
+            StreamPhase.Demo -> demoBitmap
+        }
 
-            if (phase == StreamPhase.Recognizing) {
-                // 识别中：引擎还没给 bbox（框要等 export 的 DocumentIR），上半区只放原图 + 进度浮层
-                val bmp = inputBitmap
-                if (bmp != null) {
-                    Image(
-                        bitmap = bmp.asImageBitmap(),
-                        contentDescription = "输入图",
-                        contentScale = ContentScale.Fit,
-                        modifier = Modifier.fillMaxSize(),
-                    )
-                }
-                Column(
-                    modifier = Modifier
-                        .align(Alignment.Center)
-                        .background(c.canvas.copy(alpha = 0.88f), RoundedCornerShape(Radii.md))
-                        .padding(horizontal = Space.md, vertical = Space.sm),
-                    horizontalAlignment = Alignment.CenterHorizontally,
-                ) {
-                    if (running) {
-                        CircularProgressIndicator(modifier = Modifier.size(20.dp), strokeWidth = 2.dp, color = c.primary)
-                        Spacer(Modifier.height(Space.xs))
-                    }
-                    val s = jobStatus
-                    Text(
-                        text = when {
-                            s == null || s.state == "waiting" -> "准备中…"
-                            s.regionTotal > 0 -> "${stageChip(s)} · 区域 ${s.regionCompleted}/${s.regionTotal}"
-                            else -> stageChip(s)
+        // 下半区正文共用参数（宽屏/窄屏两处调用一致，抽出来省得漂移）
+        val bodyAutoScroll = effectiveIds.isEmpty() || phase == StreamPhase.Recognizing
+        val bodyHighlight = if (phase == StreamPhase.Recognizing) {
+            emptyList()
+        } else {
+            blocksNow.filter { it.id in effectiveIds }.map { it.id }
+        }
+        val bodyOnTap: (String) -> Unit = if (phase == StreamPhase.Recognizing) {
+            {}
+        } else {
+            { id ->
+                Log.d("LinkDebug", "text tap -> $id")
+                blocksNow.firstOrNull { it.id == id }?.let { applySingle(it) }
+            }
+        }
+
+        // ── 主体：宽屏（横屏且非 Compact —— 与 OcrWindow 既定口径一致，分屏小窗不硬分栏）
+        // 左图右文分栏；窄屏维持「上原图 / 中工具条 / 下正文」三段
+        val wide = rememberOcrWindowInfo().layout == OcrLayoutMode.Split
+        if (wide) {
+            val splitState = rememberSplitPaneState()
+            ResizableRow(
+                state = splitState,
+                modifier = Modifier.fillMaxWidth().weight(1f),
+                left = { m ->
+                    StreamImagePane(
+                        phase = phase,
+                        running = running,
+                        jobStatus = jobStatus,
+                        data = data,
+                        bitmap = bitmap,
+                        blocksNow = blocksNow,
+                        revealed = revealed,
+                        colorOf = colorOf,
+                        effectiveIds = effectiveIds,
+                        activeBlock = activeBlock,
+                        onBlankTap = { selectedIds = emptySet() },
+                        onBlockTap = { block ->
+                            Log.d("LinkDebug", "image tap -> ${block.id}")
+                            applySingle(block)
+                            onBlockClick(block)
                         },
-                        style = OcrType.Caption.copy(fontSize = 12.sp),
-                        color = c.ink,
+                        onDragPreview = { dragRange = it },
+                        onCommitDrag = { commitDrag(it) },
+                        // m 携带固定宽度约束，必须真正接到内容根节点，否则高度塌陷
+                        modifier = m
+                            .padding(horizontal = Space.md, vertical = Space.xs)
+                            .background(c.paper, RoundedCornerShape(Radii.md)),
                     )
-                }
-            } else if (bitmap != null && data != null) {
-                // ContentScale.Fit 的等效换算：取小的那个比例，再居中留边
-                val scale = min(boxW / data.width, boxH / data.height)
-                val drawW = data.width * scale
-                val drawH = data.height * scale
-                val dx = (boxW - drawW) / 2f
-                val dy = (boxH - drawH) / 2f
-
-                Image(
-                    bitmap = bitmap.asImageBitmap(),
-                    contentDescription = "原图",
-                    contentScale = ContentScale.Fit,
-                    modifier = Modifier.fillMaxSize(),
-                )
-
-                Canvas(
-                    modifier = Modifier
-                        .matchParentSize()
-                        // 命中判断：屏幕坐标反算回原图坐标。Compose 不需要叠一层透明矩形
-                        // （那是 View 的 hit-test 思路），直接算落在哪个 bbox 里就行。
-                        .pointerInput(scale, dx, dy, blocksNow) {
-                            // 单击 = 单选（再点同一块取消）；点空白也取消
-                            detectTapGestures { pos ->
-                                val hit = hitAt(blocksNow, pos, dx, dy, scale)
-                                if (hit == null) {
-                                    selectedIds = emptySet()
-                                } else {
-                                    Log.d("LinkDebug", "image tap -> ${hit.id}")
-                                    applySingle(hit)
-                                    onBlockClick(hit)
-                                }
-                            }
-                        }
-                        // 长按 + 拖动 = 范围合并，松手才生效。
-                        // 必须是独立的 pointerInput：一个 pointerInput 里只能 await 一种手势，
-                        // 两个探测器塞一起会互相抢事件（表现为长按后单击也触发）。
-                        .pointerInput(scale, dx, dy, blocksNow) {
-                            detectDragGesturesAfterLongPress(
-                                onDragStart = { pos ->
-                                    val start = hitAt(blocksNow, pos, dx, dy, scale)
-                                    dragAnchor = start?.let { blocksNow.indexOf(it) }
-                                    dragRange = start?.let { setOf(it.id) } ?: emptySet()
-                                },
-                                onDrag = { change, _ ->
-                                    change.consume()
-                                    val anchor = dragAnchor
-                                    val cur = hitAt(blocksNow, change.position, dx, dy, scale)
-                                        ?.let { blocksNow.indexOf(it) }
-                                    if (anchor != null && cur != null) {
-                                        val a = minOf(anchor, cur)
-                                        val b = maxOf(anchor, cur)
-                                        dragRange = blocksNow.subList(a, b + 1).map { it.id }.toSet()
-                                    }
-                                },
-                                onDragEnd = {
-                                    val ids = dragRange
-                                    dragAnchor = null
-                                    dragRange = emptySet()
-                                    commitDrag(ids)
-                                },
-                                onDragCancel = {
-                                    dragAnchor = null
-                                    dragRange = emptySet()
-                                },
-                            )
-                        },
-                ) {
-                    // 合并框：选中 >= 2 个时取并集（左上取最小、右下取最大），画一个虚线大框
-                    if (effectiveIds.size >= 2) {
-                        val picked = blocksNow.filter { it.id in effectiveIds && it.bbox.size == 4 }
-                        if (picked.isNotEmpty()) {
-                            val x1 = picked.minOf { it.bbox[0] }
-                            val y1 = picked.minOf { it.bbox[1] }
-                            val x2 = picked.maxOf { it.bbox[2] }
-                            val y2 = picked.maxOf { it.bbox[3] }
-                            val tl = Offset(dx + x1 * scale, dy + y1 * scale)
-                            val sz = Size((x2 - x1) * scale, (y2 - y1) * scale)
-                            drawRect(color = c.primary.copy(alpha = 0.10f), topLeft = tl, size = sz, style = Fill)
-                            drawRect(
-                                color = c.primary,
-                                topLeft = tl,
-                                size = sz,
-                                style = Stroke(
-                                    width = 2f.dp.toPx(),
-                                    pathEffect = PathEffect.dashPathEffect(floatArrayOf(14f, 10f)),
-                                ),
-                            )
-                        }
-                    }
-
-                    revealed.forEach { block ->
-                        val b = block.bbox
-                        if (b.size != 4) return@forEach
-                        val isCurrent = block.id == activeBlock?.id
-                        val isSelected = block.id in effectiveIds
-                        drawRect(
-                            // 已识别的用低透明度 + 细线：29 个框全用不透明 2dp 会把原图糊满
-                            color = (colorOf[block.id] ?: c.primary)
-                                .copy(alpha = if (isCurrent || isSelected) 1f else 0.42f),
-                            topLeft = Offset(dx + b[0] * scale, dy + b[1] * scale),
-                            size = Size(
-                                ((b[2] - b[0]) * scale).coerceAtLeast(1f),
-                                ((b[3] - b[1]) * scale).coerceAtLeast(1f),
-                            ),
-                            style = Stroke(width = when {
-                                isSelected -> 3f
-                                isCurrent -> 2f
-                                else -> 1f
-                            }.dp.toPx()),
-                        )
-
-                        // 序号：默认不画（SHOW_BLOCK_INDEX = false）。
-                        // 只有需要"正文第几段对应原图哪个框"时才打开，避免小框被数字糊满。
-                        if (SHOW_BLOCK_INDEX) {
-                            val order = blocksNow.indexOfFirst { it.id == block.id } + 1
-                            if (order > 0) {
-                                val layout = indexMeasurer.measure(
-                                    text = order.toString(),
-                                    style = TextStyle(
-                                        color = colorOf[block.id] ?: c.primary,
-                                        fontSize = 9.sp,
-                                    ),
-                                )
-                                drawText(
-                                    textLayoutResult = layout,
-                                    topLeft = Offset(
-                                        dx + b[0] * scale + 3f,
-                                        (dy + b[1] * scale - layout.size.height).coerceAtLeast(0f),
-                                    ),
-                                )
-                            }
-                        }
-                    }
-                }
-            } else {
-                Text(
-                    text = "图加载失败",
-                    style = OcrType.Caption,
-                    color = c.muted,
-                    modifier = Modifier.align(Alignment.Center),
-                )
-            }
+                },
+                right = { m ->
+                    StreamBodyPane(
+                        phase = phase,
+                        running = running,
+                        liveMarkdown = liveMarkdown,
+                        finalMarkdown = finalMarkdown,
+                        autoScrollBottom = bodyAutoScroll,
+                        highlightBlockIds = bodyHighlight,
+                        onBlockTap = bodyOnTap,
+                        modifier = m
+                            .padding(horizontal = Space.md, vertical = Space.xs)
+                            .background(c.canvas, RoundedCornerShape(Radii.md)),
+                    )
+                },
+            )
+        } else {
+            StreamImagePane(
+                phase = phase,
+                running = running,
+                jobStatus = jobStatus,
+                data = data,
+                bitmap = bitmap,
+                blocksNow = blocksNow,
+                revealed = revealed,
+                colorOf = colorOf,
+                effectiveIds = effectiveIds,
+                activeBlock = activeBlock,
+                onBlankTap = { selectedIds = emptySet() },
+                onBlockTap = { block ->
+                    Log.d("LinkDebug", "image tap -> ${block.id}")
+                    applySingle(block)
+                    onBlockClick(block)
+                },
+                onDragPreview = { dragRange = it },
+                onCommitDrag = { commitDrag(it) },
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .weight(1f)
+                    .padding(horizontal = Space.md, vertical = Space.xs)
+                    .background(c.paper, RoundedCornerShape(Radii.md)),
+            )
         }
 
         // ── 进度 / 调序工具条 + 重播
@@ -864,41 +778,22 @@ fun OcrStreamScreen(
         }
 
         // ── 下半：流式 Markdown（复用结果页同一套 WebView + KaTeX）
-        Box(
-            modifier = Modifier
-                .fillMaxWidth()
-                .weight(1.15f)
-                .padding(horizontal = Space.md, vertical = Space.xs)
-                .background(c.canvas, RoundedCornerShape(Radii.md)),
-        ) {
-            OcrMarkdownView(
-                markdown = shown,
-                // 选中某块时关掉自动滚底，否则每帧 setMarkdown 都把视线拽回底部；
-                // 识别中永远自动滚底 —— 实时输出就该跟着走
-                autoScrollBottom = effectiveIds.isEmpty() || phase == StreamPhase.Recognizing,
-                highlightBlockIds = if (phase == StreamPhase.Recognizing) {
-                    emptyList()
-                } else {
-                    blocksNow.filter { it.id in effectiveIds }.map { it.id }
-                },
-                onBlockTap = if (phase == StreamPhase.Recognizing) {
-                    {}
-                } else {
-                    { id ->
-                        Log.d("LinkDebug", "text tap -> $id")
-                        blocksNow.firstOrNull { it.id == id }?.let { applySingle(it) }
-                    }
-                },
-                modifier = Modifier.fillMaxSize().padding(Space.sm),
+        // 宽屏时已在 ResizableRow 右栏，这里只补窄屏形态
+        if (!wide) {
+            StreamBodyPane(
+                phase = phase,
+                running = running,
+                liveMarkdown = liveMarkdown,
+                finalMarkdown = finalMarkdown,
+                autoScrollBottom = bodyAutoScroll,
+                highlightBlockIds = bodyHighlight,
+                onBlockTap = bodyOnTap,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .weight(1.15f)
+                    .padding(horizontal = Space.md, vertical = Space.xs)
+                    .background(c.canvas, RoundedCornerShape(Radii.md)),
             )
-            if (shown.isEmpty()) {
-                Text(
-                    text = if (phase == StreamPhase.Recognizing) "正在等待第一个区域的输出…" else "正在准备区域数据…",
-                    style = OcrType.Caption,
-                    color = c.mutedSoft,
-                    modifier = Modifier.align(Alignment.Center),
-                )
-            }
         }
 
         Spacer(Modifier.height(Space.sm))
@@ -908,7 +803,10 @@ fun OcrStreamScreen(
         // Toast 在部分 ROM 上会被限流，而且样式脱离这套设计语言。
         AnimatedVisibility(
             visible = hintText != null,
-            modifier = Modifier.align(Alignment.BottomCenter).padding(bottom = Space.xl),
+            modifier = Modifier
+                .align(Alignment.BottomCenter)
+                .navigationBarsPadding()
+                .padding(bottom = Space.xl),
             enter = fadeIn() + slideInVertically { it / 3 },
             exit = fadeOut() + slideOutVertically { it / 3 },
         ) {
@@ -956,15 +854,20 @@ private enum class StreamPhase { Demo, Recognizing, Done }
 /** 阶段徽标文案：运行中用引擎原样 state（preparing/recognizing/saving），waiting 显示待开始。 */
 private fun stageChip(s: LocalJobStatus): String = if (s.state == "waiting") "待开始" else s.state
 
-/** 文件解码（限边长防大图占内存）；与 OcrPipelineScreen.decodeScaled 同思路，页面各留私有副本。 */
-private fun decodeImageScaled(path: String, maxSide: Int): Bitmap? = runCatching {
-    val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
-    BitmapFactory.decodeFile(path, bounds)
-    if (bounds.outWidth <= 0) return@runCatching null
-    var sample = 1
-    while (maxOf(bounds.outWidth, bounds.outHeight) / sample > maxSide) sample *= 2
-    BitmapFactory.decodeFile(path, BitmapFactory.Options().apply { inSampleSize = sample })
-}.getOrNull()
+/**
+ * 调序结果的 Saver：List<String>? ↔ List<String>（空列表还原成 null=未调序）。
+ * 区域 id 非空且不含 \u0001，joinToString 往返无损。
+ */
+private val CustomOrderSaver = Saver<List<String>?, List<String>>(
+    save = { it.orEmpty() },
+    restore = { saved -> if (saved.isEmpty()) null else saved },
+)
+
+/** 撤销栈的 Saver：List<List<String>?> ↔ List<List<String>>（空列表还原成 null 快照） */
+private val OrderHistorySaver = Saver<List<List<String>?>, List<List<String>>>(
+    save = { history -> history.map { order -> order.orEmpty() } },
+    restore = { saved -> saved.map { order -> if (order.isEmpty()) null else order } },
+)
 
 /**
  * 识别入口行（仅 engine 非 null 的调用点显示）：小缩略图 + 文件名 + 动作。
@@ -982,6 +885,13 @@ private fun RecognitionEntryRow(
     onCancel: () -> Unit,
 ) {
     val c = Ocr.colors
+    // 缩略图解码走 IO（与同文件大图同一纪律），未就绪时给「图」字占位。
+    // 先读进局部值：thumb 是委托属性，Kotlin 不能对它 smart cast
+    val thumb by produceState<Bitmap?>(null, imagePath) {
+        val p = imagePath ?: return@produceState
+        value = decodeSampled(p, 256)
+    }
+    val resolvedThumb = thumb
     Row(
         modifier = Modifier
             .fillMaxWidth()
@@ -989,7 +899,6 @@ private fun RecognitionEntryRow(
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(Space.xs),
     ) {
-        val thumb = imagePath?.let { remember(it) { decodeImageScaled(it, 256) } }
         Box(
             modifier = Modifier
                 .size(40.dp)
@@ -997,9 +906,9 @@ private fun RecognitionEntryRow(
                 .background(c.creamStrong),
             contentAlignment = Alignment.Center,
         ) {
-            if (thumb != null) {
+            if (resolvedThumb != null) {
                 Image(
-                    bitmap = thumb.asImageBitmap(),
+                    bitmap = resolvedThumb.asImageBitmap(),
                     contentDescription = "输入图缩略",
                     contentScale = ContentScale.Crop,
                     modifier = Modifier.fillMaxSize(),
@@ -1236,5 +1145,310 @@ private fun hitAt(
         b.bbox.size == 4 &&
             ix >= b.bbox[0] && ix <= b.bbox[2] &&
             iy >= b.bbox[1] && iy <= b.bbox[3]
+    }
+}
+
+/* ---------------------- 主体两个 pane（宽屏分栏 / 窄屏共用） ---------------------- */
+
+/**
+ * 上半原图区：原图/区域框/高亮/选中与合并手势。从页面主体机械搬出，绘制逻辑不变；
+ * 位图由父级异步解码后传入，宽屏时作为 ResizableRow 左栏、窄屏独立占一段，
+ * modifier（含 background）由调用方给定。
+ */
+@Composable
+private fun StreamImagePane(
+    phase: StreamPhase,
+    running: Boolean,
+    jobStatus: LocalJobStatus?,
+    data: OcrStreamPage?,
+    bitmap: Bitmap?,
+    blocksNow: List<OcrStreamBlock>,
+    revealed: List<OcrStreamBlock>,
+    colorOf: Map<String, Color>,
+    effectiveIds: Set<String>,
+    activeBlock: OcrStreamBlock?,
+    /** 点到空白：取消选中 */
+    onBlankTap: () -> Unit,
+    /** 点中某个区域：单选 + 复制（父级负责联动正文与剪贴板） */
+    onBlockTap: (OcrStreamBlock) -> Unit,
+    /** 长按拖动中的预览区间变化 */
+    onDragPreview: (Set<String>) -> Unit,
+    /** 松手提交合并 */
+    onCommitDrag: (Set<String>) -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    val c = Ocr.colors
+    BoxWithConstraints(modifier) {
+        val density = LocalDensity.current
+        val boxW = with(density) { maxWidth.toPx() }
+        val boxH = with(density) { maxHeight.toPx() }
+        // 序号测量器：只在 SHOW_BLOCK_INDEX 打开时才会被调用，默认不影响性能
+        val indexMeasurer = rememberTextMeasurer()
+        // 拖动手势的临时锚点/预览区间：只在手势内部使用，收进 pane（重建即丢，无害）
+        var dragAnchor by remember { mutableStateOf<Int?>(null) }
+        var previewRange by remember { mutableStateOf<Set<String>>(emptySet()) }
+
+        if (phase == StreamPhase.Recognizing) {
+            // 识别中：引擎还没给 bbox（框要等 export 的 DocumentIR），只放原图 + 进度浮层
+            val bmp = bitmap
+            if (bmp != null) {
+                Image(
+                    bitmap = bmp.asImageBitmap(),
+                    contentDescription = "输入图",
+                    contentScale = ContentScale.Fit,
+                    modifier = Modifier.fillMaxSize(),
+                )
+            }
+            Column(
+                modifier = Modifier
+                    .align(Alignment.Center)
+                    .background(c.canvas.copy(alpha = 0.88f), RoundedCornerShape(Radii.md))
+                    .padding(horizontal = Space.md, vertical = Space.sm),
+                horizontalAlignment = Alignment.CenterHorizontally,
+            ) {
+                if (running) {
+                    CircularProgressIndicator(modifier = Modifier.size(20.dp), strokeWidth = 2.dp, color = c.primary)
+                    Spacer(Modifier.height(Space.xs))
+                }
+                val s = jobStatus
+                Text(
+                    text = when {
+                        s == null || s.state == "waiting" -> "准备中…"
+                        s.regionTotal > 0 -> "${stageChip(s)} · 区域 ${s.regionCompleted}/${s.regionTotal}"
+                        else -> stageChip(s)
+                    },
+                    style = OcrType.Caption.copy(fontSize = 12.sp),
+                    color = c.ink,
+                )
+            }
+        } else if (bitmap != null && data != null) {
+            // ContentScale.Fit 的等效换算：取小的那个比例，再居中留边
+            val scale = min(boxW / data.width, boxH / data.height)
+            val drawW = data.width * scale
+            val drawH = data.height * scale
+            val dx = (boxW - drawW) / 2f
+            val dy = (boxH - drawH) / 2f
+
+            Image(
+                bitmap = bitmap.asImageBitmap(),
+                contentDescription = "原图",
+                contentScale = ContentScale.Fit,
+                modifier = Modifier.fillMaxSize(),
+            )
+
+            Canvas(
+                modifier = Modifier
+                    .matchParentSize()
+                    // 命中判断：屏幕坐标反算回原图坐标。Compose 不需要叠一层透明矩形
+                    // （那是 View 的 hit-test 思路），直接算落在哪个 bbox 里就行。
+                    .pointerInput(scale, dx, dy, blocksNow) {
+                        // 单击 = 单选（再点同一块取消）；点空白也取消
+                        detectTapGestures { pos ->
+                            val hit = hitAt(blocksNow, pos, dx, dy, scale)
+                            if (hit == null) {
+                                onBlankTap()
+                            } else {
+                                Log.d("LinkDebug", "image tap -> ${hit.id}")
+                                onBlockTap(hit)
+                            }
+                        }
+                    }
+                    // 长按 + 拖动 = 范围合并，松手才生效。
+                    // 必须是独立的 pointerInput：一个 pointerInput 里只能 await 一种手势，
+                    // 两个探测器塞一起会互相抢事件（表现为长按后单击也触发）。
+                    .pointerInput(scale, dx, dy, blocksNow) {
+                        detectDragGesturesAfterLongPress(
+                            onDragStart = { pos ->
+                                val start = hitAt(blocksNow, pos, dx, dy, scale)
+                                dragAnchor = start?.let { blocksNow.indexOf(it) }
+                                previewRange = start?.let { setOf(it.id) } ?: emptySet()
+                                onDragPreview(previewRange)
+                            },
+                            onDrag = { change, _ ->
+                                change.consume()
+                                val anchor = dragAnchor
+                                val cur = hitAt(blocksNow, change.position, dx, dy, scale)
+                                    ?.let { blocksNow.indexOf(it) }
+                                if (anchor != null && cur != null) {
+                                    val a = minOf(anchor, cur)
+                                    val b = maxOf(anchor, cur)
+                                    previewRange = blocksNow.subList(a, b + 1).map { it.id }.toSet()
+                                    onDragPreview(previewRange)
+                                }
+                            },
+                            onDragEnd = {
+                                val ids = previewRange
+                                dragAnchor = null
+                                previewRange = emptySet()
+                                onDragPreview(emptySet())
+                                onCommitDrag(ids)
+                            },
+                            onDragCancel = {
+                                dragAnchor = null
+                                previewRange = emptySet()
+                                onDragPreview(emptySet())
+                            },
+                        )
+                    },
+            ) {
+                // 合并框：选中 >= 2 个时取并集（左上取最小、右下取最大），画一个虚线大框
+                if (effectiveIds.size >= 2) {
+                    val picked = blocksNow.filter { it.id in effectiveIds && it.bbox.size == 4 }
+                    if (picked.isNotEmpty()) {
+                        val x1 = picked.minOf { it.bbox[0] }
+                        val y1 = picked.minOf { it.bbox[1] }
+                        val x2 = picked.maxOf { it.bbox[2] }
+                        val y2 = picked.maxOf { it.bbox[3] }
+                        val tl = Offset(dx + x1 * scale, dy + y1 * scale)
+                        val sz = Size((x2 - x1) * scale, (y2 - y1) * scale)
+                        drawRect(color = c.primary.copy(alpha = 0.10f), topLeft = tl, size = sz, style = Fill)
+                        drawRect(
+                            color = c.primary,
+                            topLeft = tl,
+                            size = sz,
+                            style = Stroke(
+                                width = 2f.dp.toPx(),
+                                pathEffect = PathEffect.dashPathEffect(floatArrayOf(14f, 10f)),
+                            ),
+                        )
+                    }
+                }
+
+                revealed.forEach { block ->
+                    val b = block.bbox
+                    if (b.size != 4) return@forEach
+                    val isCurrent = block.id == activeBlock?.id
+                    val isSelected = block.id in effectiveIds
+                    drawRect(
+                        // 已识别的用低透明度 + 细线：29 个框全用不透明 2dp 会把原图糊满
+                        color = (colorOf[block.id] ?: c.primary)
+                            .copy(alpha = if (isCurrent || isSelected) 1f else 0.42f),
+                        topLeft = Offset(dx + b[0] * scale, dy + b[1] * scale),
+                        size = Size(
+                            ((b[2] - b[0]) * scale).coerceAtLeast(1f),
+                            ((b[3] - b[1]) * scale).coerceAtLeast(1f),
+                        ),
+                        style = Stroke(width = when {
+                            isSelected -> 3f
+                            isCurrent -> 2f
+                            else -> 1f
+                        }.dp.toPx()),
+                    )
+
+                    // 序号：默认不画（SHOW_BLOCK_INDEX = false）。
+                    // 只有需要"正文第几段对应原图哪个框"时才打开，避免小框被数字糊满。
+                    if (SHOW_BLOCK_INDEX) {
+                        val order = blocksNow.indexOfFirst { it.id == block.id } + 1
+                        if (order > 0) {
+                            val layout = indexMeasurer.measure(
+                                text = order.toString(),
+                                style = TextStyle(
+                                    color = colorOf[block.id] ?: c.primary,
+                                    fontSize = 9.sp,
+                                ),
+                            )
+                            drawText(
+                                textLayoutResult = layout,
+                                topLeft = Offset(
+                                    dx + b[0] * scale + 3f,
+                                    (dy + b[1] * scale - layout.size.height).coerceAtLeast(0f),
+                                ),
+                            )
+                        }
+                    }
+                }
+            }
+        } else {
+            Text(
+                text = if (data == null) "正在准备区域数据…" else "图加载失败",
+                style = OcrType.Caption,
+                color = c.muted,
+                modifier = Modifier.align(Alignment.Center),
+            )
+        }
+    }
+}
+
+/**
+ * 下半正文区：识别中的平滑上屏与 Markdown 渲染都收在这里。
+ * 单独成 pane 的原因：追赶循环每 26ms 推进一次 liveShownLen，旧写法这个 State 挂在
+ * 页面根部、每次推进重组整页 —— 而真正变的只有下半 WebView 的文本。
+ * 宽屏时作为 ResizableRow 右栏、窄屏独立占一段，modifier（含 background）由调用方给定。
+ */
+@Composable
+private fun StreamBodyPane(
+    phase: StreamPhase,
+    running: Boolean,
+    liveMarkdown: String,
+    finalMarkdown: String,
+    autoScrollBottom: Boolean,
+    highlightBlockIds: List<String>,
+    onBlockTap: (String) -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    val c = Ocr.colors
+    // 识别中"已经显示到第几个字"，由下面的追赶循环推进
+    var liveShownLen by remember { mutableIntStateOf(0) }
+
+    // ── 平滑上屏（追赶式打字机）：引擎每 400ms 轮询回来一批新字，直接整段上屏就是
+    // "突然蹦出一坨"。liveShownLen 记录"已经显示到第几个字"，本循环每 26ms 推进一步去追
+    // liveMarkdown.length：积压越多一步走得越远（约 1/12，对数式收敛，一大段约 1 秒铺完），
+    // 快追上时一步只走 1 个字 —— 远看整段滑入，近看逐字打出，且永远追得上生成速度。
+    LaunchedEffect(liveMarkdown, phase) {
+        // 新一轮识别开始时 liveMarkdown 变空：清掉上一轮的进度（承接 runOne 的清屏语义）
+        if (liveMarkdown.isEmpty()) {
+            liveShownLen = 0
+            return@LaunchedEffect
+        }
+        if (phase != StreamPhase.Recognizing) return@LaunchedEffect
+        while (liveShownLen < liveMarkdown.length) {
+            val remaining = liveMarkdown.length - liveShownLen
+            liveShownLen += ((remaining + 11) / 12).coerceIn(1, 24)
+            delay(26) // 与演示打字机同节奏：这是 WebView 刷得动的上限（见文件头注释）
+        }
+    }
+
+    // 识别中实际喂 WebView 的是 liveMarkdown 的前 liveShownLen 个字（末尾若劈开了
+    // 代理对字符就让一位，避免 emoji / 生僻字显示成乱码），结尾跟一个假光标 "▌"：
+    // "正在打字"的观感由它和 26ms 步进一起给出来，终态自动消失。
+    val liveShown = run {
+        var end = liveShownLen.coerceAtMost(liveMarkdown.length)
+        if (end in 1 until liveMarkdown.length && Character.isHighSurrogate(liveMarkdown[end - 1])) end--
+        liveMarkdown.substring(0, end) + if (running) " ▌" else ""
+    }
+    val shown = if (phase == StreamPhase.Recognizing) liveShown else finalMarkdown
+
+    Box(modifier) {
+        OcrMarkdownView(
+            markdown = shown,
+            // 选中某块时关掉自动滚底，否则每帧 setMarkdown 都把视线拽回底部；
+            // 识别中永远自动滚底 —— 实时输出就该跟着走
+            autoScrollBottom = autoScrollBottom,
+            highlightBlockIds = highlightBlockIds,
+            onBlockTap = onBlockTap,
+            modifier = Modifier.fillMaxSize().padding(Space.sm),
+        )
+        if (shown.isEmpty()) {
+            Text(
+                text = if (phase == StreamPhase.Recognizing) "正在等待第一个区域的输出…" else "正在准备区域数据…",
+                style = OcrType.Caption,
+                color = c.mutedSoft,
+                modifier = Modifier.align(Alignment.Center),
+            )
+        }
+    }
+}
+/* ------------------------------------------------------------------ *
+ * 预览组：纯演示模式（engine=null，不建引擎门面，Layoutlib 拿不到安全实例）。
+ * WebView 区域在预览中只显示占位文案属正常。锁定竖排三段结构在宽屏下的观感。
+ * ------------------------------------------------------------------ */
+@Preview(name = "phone", showBackground = true, device = Devices.PHONE)
+@Preview(name = "landscape", showBackground = true, widthDp = 800, heightDp = 380)
+@Preview(name = "foldable", showBackground = true, device = Devices.FOLDABLE)
+@Preview(name = "tablet", showBackground = true, device = Devices.TABLET)
+@Composable
+private fun OcrStreamScreenPreview() {
+    CompositionLocalProvider(LocalOcrColors provides OcrColors.Light) {
+        OcrStreamScreen(onBack = {})
     }
 }

@@ -1,7 +1,6 @@
 package com.doclayout.recognize.ui.screen
 
 import android.graphics.Bitmap
-import android.graphics.BitmapFactory
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.PickVisualMediaRequest
 import androidx.activity.result.contract.ActivityResultContracts
@@ -24,6 +23,7 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.safeDrawingPadding
 import androidx.compose.foundation.layout.size
@@ -44,6 +44,7 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -65,11 +66,16 @@ import com.doclayout.recognize.data.local.LocalJobStatus
 import com.doclayout.recognize.data.local.LocalOcrEngine
 import com.doclayout.recognize.data.local.LocalStreamRegion
 import com.doclayout.recognize.data.local.OcrStore
+import com.doclayout.recognize.data.local.decodeSampled
 import com.doclayout.recognize.data.model.OcrStreamPage
 import com.doclayout.recognize.ui.component.OcrTopBar
 import com.doclayout.recognize.ui.component.Pill
 import com.doclayout.recognize.ui.component.SettingCard
 import com.doclayout.recognize.ui.icon.IconDoc
+import com.doclayout.recognize.ui.layout.OcrLayoutMode
+import com.doclayout.recognize.ui.layout.ResizableRow
+import com.doclayout.recognize.ui.layout.rememberOcrWindowInfo
+import com.doclayout.recognize.ui.layout.rememberSplitPaneState
 import com.doclayout.recognize.ui.render.OcrMarkdownView
 import com.doclayout.recognize.ui.theme.Ocr
 import com.doclayout.recognize.ui.theme.OcrType
@@ -127,10 +133,11 @@ fun OcrPipelineScreen(
     // 只为复用 stageUri（content Uri → cacheDir 文件）；记录仓库本体是引擎的 documents 目录
     val store = remember { OcrStore(context) }
 
-    // ── 作业状态
-    var imagePath by remember { mutableStateOf<String?>(null) }
-    var docId by remember { mutableStateOf<String?>(null) }
-    var jobId by remember { mutableStateOf<String?>(null) }
+    // ── 作业状态（imagePath/docId/jobId 走 saveable：重建后 LaunchedEffect(docId)
+    //    重新轮询，终态自动 readExport 回填，识别会话 UI 继续跟进）
+    var imagePath by rememberSaveable { mutableStateOf<String?>(null) }
+    var docId by rememberSaveable { mutableStateOf<String?>(null) }
+    var jobId by rememberSaveable { mutableStateOf<String?>(null) }
     var status by remember { mutableStateOf<LocalJobStatus?>(null) }
     // 流式快照：只在 stream.revision 变化时才写入（见轮询循环），驱动流文本区重组
     var regions by remember { mutableStateOf<List<LocalStreamRegion>>(emptyList()) }
@@ -138,7 +145,9 @@ fun OcrPipelineScreen(
     var starting by remember { mutableStateOf(false) }
 
     // ── 展示状态
-    var finishedTab by remember { mutableIntStateOf(0) } // 0=Markdown 1=区域框 2=流式记录
+    // finishedTab 也 saveable：恢复后轮询只回填 export、不再碰 Tab（复位在 runOne），
+    // 「运行中/终态恢复」都保得住这个选择
+    var finishedTab by rememberSaveable { mutableIntStateOf(0) } // 0=Markdown 1=区域框 2=流式记录
     var error by remember { mutableStateOf<String?>(null) }
     var hint by remember { mutableStateOf<String?>(null) }
 
@@ -156,10 +165,13 @@ fun OcrPipelineScreen(
                     error = "模型还没就绪（${ready.state}）：${ready.message}\n去 设置 → 管理端侧模型 处理"
                     return@launch
                 }
-                // 新一轮：清掉上一轮的展示状态
+                // 新一轮：清掉上一轮的展示状态（Tab 复位在这里做 —— 轮询循环里
+                // 不再无条件 finishedTab = 0，否则 saveable 恢复的 Tab 会被
+                // 恢复后第一次轮询到终态时覆盖回 0）
                 imagePath = file.absolutePath
                 docId = null; jobId = null; status = null
                 regions = emptyList(); export = null
+                finishedTab = 0
                 // createInput 落盘记录并 autoStart（模型就绪时直接开跑）；再显式 start 一次
                 // 兜住"autoStart 只落盘没启动"的分支。start 对运行中的同记录作业是幂等返回。
                 val summary = engine.createInput(title = OcrStore.titleFor(1), image = file)
@@ -197,8 +209,9 @@ fun OcrPipelineScreen(
                     regions = s.stream?.regions.orEmpty()
                 }
                 if (s.terminal) {
+                    // 只回填 export，不动 finishedTab：Tab 是用户的选择（saveable），
+                    // 「新一轮默认落整页 Markdown」的产品语义由 runOne 的复位保证
                     export = runCatching { engine.readExport(id) }.getOrNull()
-                    finishedTab = 0
                     break
                 }
             }
@@ -208,8 +221,12 @@ fun OcrPipelineScreen(
 
     // 深链直达：--ei ocr 4 --es scanpath <应用可读路径>。路径必须配合 ocr 4 使用，
     // 因为只有 Pipeline 页组合时这段才会跑（OcrApp 没实现 onNewIntent，深链前先 force-stop）。
+    // 消费标志必须 saveable：旋转重建后 intent extra 原样重投，不挡住就会重复 createInput
+    var initialPathConsumed by rememberSaveable { mutableStateOf(false) }
     LaunchedEffect(initialPath) {
-        val path = initialPath ?: return@LaunchedEffect
+        val path = initialPath
+        if (path == null || initialPathConsumed) return@LaunchedEffect
+        initialPathConsumed = true
         val file = File(path)
         if (!file.isFile) {
             error = "找不到调试图片：$path"
@@ -270,19 +287,20 @@ fun OcrPipelineScreen(
                                 .border(1.dp, c.hairline, RoundedCornerShape(Radii.md)),
                             contentAlignment = Alignment.Center,
                         ) {
-                            if (imagePath != null) {
-                                // 小缩略图同步解码即可（56dp 用不了多少像素），大图在区域框视图里走 IO
-                                val thumb = remember(imagePath) { decodeScaled(imagePath!!, 256) }
-                                if (thumb != null) {
-                                    Image(
-                                        bitmap = thumb.asImageBitmap(),
-                                        contentDescription = "输入图缩略",
-                                        contentScale = ContentScale.Crop,
-                                        modifier = Modifier.fillMaxSize(),
-                                    )
-                                } else {
-                                    IconDoc(c.muted, size = 22.dp)
-                                }
+                            // 缩略图解码走 IO（与下方大图同一纪律）；未就绪时 IconDoc 占位自然显示。
+                            // 先读进局部值：thumb 是委托属性，Kotlin 不能对它 smart cast
+                            val thumb by produceState<Bitmap?>(null, imagePath) {
+                                val path = imagePath ?: return@produceState
+                                value = decodeSampled(path, 256)
+                            }
+                            val resolvedThumb = thumb
+                            if (resolvedThumb != null) {
+                                Image(
+                                    bitmap = resolvedThumb.asImageBitmap(),
+                                    contentDescription = "输入图缩略",
+                                    contentScale = ContentScale.Crop,
+                                    modifier = Modifier.fillMaxSize(),
+                                )
                             } else {
                                 IconDoc(c.muted, size = 22.dp)
                             }
@@ -407,28 +425,61 @@ fun OcrPipelineScreen(
             }
 
             // ── 主体
-            Box(
-                modifier = Modifier
-                    .weight(1f)
-                    .fillMaxWidth()
-                    .padding(horizontal = Space.lg, vertical = Space.xs),
-            ) {
-                when {
-                    s == null && regions.isEmpty() -> EmptyGuide(starting = starting)
-                    s?.terminal == true && finishedTab == 1 -> RegionOverlayView(
-                        imagePath = export?.inputPath ?: imagePath,
-                        page = export?.page,
-                        modifier = Modifier.fillMaxSize(),
-                    )
-                    s?.terminal == true && finishedTab == 2 -> RegionStreamList(
-                        regions = regions,
-                        modifier = Modifier.fillMaxSize(),
-                    )
-                    s?.terminal == true -> ExportMarkdownView(
-                        export = export,
-                        modifier = Modifier.fillMaxSize(),
-                    )
-                    else -> RegionStreamList(regions = regions, modifier = Modifier.fillMaxSize())
+            // 横屏/平板且识别完成：左区域框右正文分栏（与结果页同一套 ResizableRow）。
+            // wide 口径与项目既定标准一致（OcrWindow.layout == Split）：横屏但分屏小窗
+            // 只有 520dp 宽还硬分栏，两边都不可用。运行中主体只有流式文本列表，
+            // 横屏本身可读，维持上下结构。finishedTab==1（纯区域框）也维持全宽。
+            // split 状态无条件 remember：翻 Tab 不丢分栏比例
+            val splitState = rememberSplitPaneState()
+            val wide = rememberOcrWindowInfo().layout == OcrLayoutMode.Split
+            if (s?.terminal == true && wide && finishedTab != 1) {
+                ResizableRow(
+                    state = splitState,
+                    modifier = Modifier
+                        .weight(1f)
+                        .fillMaxWidth()
+                        .padding(horizontal = Space.lg, vertical = Space.xs),
+                    left = { m ->
+                        // m 必须真正传进视图根节点：ResizableRow 的测量阶段把固定宽度
+                        // 写在这个 Modifier 上，不透传会让内容不消费约束、高度塌陷
+                        RegionOverlayView(
+                            imagePath = export?.inputPath ?: imagePath,
+                            page = export?.page,
+                            modifier = m,
+                        )
+                    },
+                    right = { m ->
+                        if (finishedTab == 2) {
+                            RegionStreamList(regions = regions, modifier = m)
+                        } else {
+                            ExportMarkdownView(export = export, modifier = m)
+                        }
+                    },
+                )
+            } else {
+                Box(
+                    modifier = Modifier
+                        .weight(1f)
+                        .fillMaxWidth()
+                        .padding(horizontal = Space.lg, vertical = Space.xs),
+                ) {
+                    when {
+                        s == null && regions.isEmpty() -> EmptyGuide(starting = starting)
+                        s?.terminal == true && finishedTab == 1 -> RegionOverlayView(
+                            imagePath = export?.inputPath ?: imagePath,
+                            page = export?.page,
+                            modifier = Modifier.fillMaxSize(),
+                        )
+                        s?.terminal == true && finishedTab == 2 -> RegionStreamList(
+                            regions = regions,
+                            modifier = Modifier.fillMaxSize(),
+                        )
+                        s?.terminal == true -> ExportMarkdownView(
+                            export = export,
+                            modifier = Modifier.fillMaxSize(),
+                        )
+                        else -> RegionStreamList(regions = regions, modifier = Modifier.fillMaxSize())
+                    }
                 }
             }
         }
@@ -438,6 +489,7 @@ fun OcrPipelineScreen(
             visible = hint != null,
             modifier = Modifier
                 .align(Alignment.BottomCenter)
+                .navigationBarsPadding()
                 .padding(bottom = Space.xl),
             enter = fadeIn() + slideInVertically { it / 3 },
             exit = fadeOut() + slideOutVertically { it / 3 },
@@ -523,7 +575,13 @@ private fun RegionStreamList(regions: List<LocalStreamRegion>, modifier: Modifie
         modifier = modifier,
         verticalArrangement = Arrangement.spacedBy(Space.xs),
     ) {
-        itemsIndexed(regions) { index, region ->
+        // key 用 requestId#attempt（稳定字符串 + 重试区分）：流式期间列表整替时
+        // 按位置 diff 会让区域插入/重排之后的所有行全部重建
+        itemsIndexed(
+            regions,
+            key = { _, r -> "${r.requestId}#${r.attempt}" },
+            contentType = { _, _ -> "region" },
+        ) { index, region ->
             Column(
                 modifier = Modifier
                     .fillMaxWidth()
@@ -660,7 +718,7 @@ private fun RegionOverlayView(
         val bitmap by produceState<Bitmap?>(null, imagePath) {
             val path = imagePath
             if (path == null) return@produceState
-            value = withContext(Dispatchers.IO) { decodeScaled(path, 2048) }
+            value = withContext(Dispatchers.IO) { decodeSampled(path, 2048) }
         }
         when {
             page == null -> Text(
@@ -769,13 +827,3 @@ private fun stageLabel(s: LocalJobStatus?): String = when {
     s.state == "waiting" -> "待开始"
     else -> s.state
 }
-
-/** 文件解码（限边长，防大图占内存）；与 OcrComponents.decodeThumb 同思路，独立成页内私有。 */
-private fun decodeScaled(path: String, maxSide: Int): Bitmap? = runCatching {
-    val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
-    BitmapFactory.decodeFile(path, bounds)
-    if (bounds.outWidth <= 0) return@runCatching null
-    var sample = 1
-    while (maxOf(bounds.outWidth, bounds.outHeight) / sample > maxSide) sample *= 2
-    BitmapFactory.decodeFile(path, BitmapFactory.Options().apply { inSampleSize = sample })
-}.getOrNull()

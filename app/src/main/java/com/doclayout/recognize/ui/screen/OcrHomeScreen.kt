@@ -2,7 +2,9 @@ package com.doclayout.recognize.ui.screen
 
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.ui.draw.clip
 import com.doclayout.recognize.ui.icon.IconChevronRight
 import com.doclayout.recognize.ui.theme.Radii
@@ -22,6 +24,7 @@ import com.doclayout.recognize.ui.theme.OcrType
 import com.doclayout.recognize.ui.theme.Space
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
@@ -41,14 +44,20 @@ import androidx.compose.foundation.lazy.grid.items
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
-import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.tooling.preview.Devices
+import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.doclayout.recognize.data.sample.sampleRecords
+import com.doclayout.recognize.ui.theme.LocalOcrColors
+import com.doclayout.recognize.ui.theme.OcrColors
 
 /**
  * 首页。
@@ -73,7 +82,8 @@ fun OcrHomeScreen(
     onOpenPipeline: () -> Unit = {},
 ) {
     val c = Ocr.colors
-    var showAll by remember { mutableStateOf(false) }
+    // "查看全部"是否展开：saveable，进程回收/重建后不丢
+    var showAll by rememberSaveable { mutableStateOf(false) }
 
     Column(
         modifier = Modifier
@@ -91,17 +101,24 @@ fun OcrHomeScreen(
             },
         )
 
-        Box(Modifier.fillMaxWidth().weight(1f), contentAlignment = Alignment.TopCenter) {
+        // BoxWithConstraints 只为读可视高度：手机横屏可视高约 340-390dp，
+        // 内容约 640dp 且 Column 不可滚动，weight 子项会全部归零 —— 矮屏切换滚动兜底
+        BoxWithConstraints(Modifier.fillMaxWidth().weight(1f), contentAlignment = Alignment.TopCenter) {
+            // 矮屏判定：低于 560dp（横屏手机/分屏小窗）就走滚动 + 固定高度
+            val short = maxHeight < 560.dp
+            val scrollState = rememberScrollState()
             Column(
                 modifier = Modifier
                     .widthIn(max = Space.contentMax)
                     .fillMaxWidth()
                     .fillMaxHeight()
+                    // 矮屏时整列可滚：verticalScroll 需要限高，这里外层 weight(1f) 已给定高度
+                    .then(if (short) Modifier.verticalScroll(scrollState) else Modifier)
                     .padding(horizontal = Space.lg),
             ) {
                 Spacer(Modifier.height(Space.xs))
 
-                // ── 主操作区：两块并排，占上半部
+                // ── 主操作区：两块并排，占上半部（矮屏压到 160dp，常规 198dp 不变）
                 Row(
                     modifier = Modifier.fillMaxWidth(),
                     horizontalArrangement = Arrangement.spacedBy(Space.sm),
@@ -112,6 +129,7 @@ fun OcrHomeScreen(
                         primary = true,
                         onClick = onCapture,
                         modifier = Modifier.weight(1f),
+                        height = if (short) 160.dp else 198.dp,
                     ) { fg -> IconCamera(fg, size = 22.dp) }
                     ActionCard(
                         label = "相册导入",
@@ -121,6 +139,7 @@ fun OcrHomeScreen(
                         primary = false,
                         onClick = onImport,
                         modifier = Modifier.weight(1f),
+                        height = if (short) 160.dp else 198.dp,
                     ) { fg -> IconGallery(fg, size = 22.dp) }
                 }
 
@@ -146,8 +165,13 @@ fun OcrHomeScreen(
                 Spacer(Modifier.height(Space.md))
 
                 if (records.isEmpty()) {
-                    // ── 空状态：主操作不动，只在下面给出引导
-                    Box(Modifier.fillMaxWidth().weight(1f), contentAlignment = Alignment.Center) {
+                    // ── 空状态：主操作不动，只在下面给出引导（矮屏给固定高，配合外层滚动）
+                    Box(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .then(if (short) Modifier.height(240.dp) else Modifier.weight(1f)),
+                        contentAlignment = Alignment.Center,
+                    ) {
                         EmptyRecords()
                     }
                 } else {
@@ -160,13 +184,17 @@ fun OcrHomeScreen(
 
                     if (showAll) {
                         LazyVerticalGrid(
-                            columns = GridCells.Fixed(2),
-                            modifier = Modifier.fillMaxWidth().weight(1f),
+                            // Adaptive：手机竖屏仍约两列，横屏/平板自动加列
+                            columns = GridCells.Adaptive(180.dp),
+                            // LazyVerticalGrid 在滚动容器内必须限高（否则无限高测量直接崩）
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .then(if (short) Modifier.height(360.dp) else Modifier.weight(1f)),
                             verticalArrangement = Arrangement.spacedBy(Space.md),
                             horizontalArrangement = Arrangement.spacedBy(Space.sm),
                             contentPadding = PaddingValues(bottom = Space.md),
                         ) {
-                            items(records, key = { it.id }) { record ->
+                            items(records, key = { it.id }, contentType = { "record" }) { record ->
                                 RecordCard(
                                     record = record,
                                     onClick = { onOpenRecord(record) },
@@ -180,11 +208,11 @@ fun OcrHomeScreen(
                             horizontalArrangement = Arrangement.spacedBy(Space.sm),
                             modifier = Modifier.fillMaxWidth(),
                         ) {
-                            items(records, key = { it.id }) { record ->
+                            items(records, key = { it.id }, contentType = { "record" }) { record ->
                                 RecordCard(record = record, onClick = { onOpenRecord(record) })
                             }
                         }
-                        Spacer(Modifier.weight(1f))
+                        if (short) Spacer(Modifier.height(Space.md)) else Spacer(Modifier.weight(1f))
                     }
                 }
 
@@ -332,5 +360,27 @@ private fun StreamEntry(onClick: () -> Unit) {
             )
         }
         IconChevronRight(c.mutedSoft, size = 14.dp, stroke = 1.5.dp)
+    }
+}
+
+/* ------------------------------------------------------------------ *
+ * 预览组：phone / landscape（380dp 高，锁定矮屏滚动兜底）/ foldable / tablet。
+ * 只喂假样例（imagePath 为 null → PaperThumb 走 Canvas 纸面），无 IO，Layoutlib 可跑。
+ * ------------------------------------------------------------------ */
+@Preview(name = "phone", showBackground = true, device = Devices.PHONE)
+@Preview(name = "landscape", showBackground = true, widthDp = 800, heightDp = 380)
+@Preview(name = "foldable", showBackground = true, device = Devices.FOLDABLE)
+@Preview(name = "tablet", showBackground = true, device = Devices.TABLET)
+@Composable
+private fun OcrHomeScreenPreview() {
+    CompositionLocalProvider(LocalOcrColors provides OcrColors.Light) {
+        OcrHomeScreen(
+            records = sampleRecords,
+            onOpenSettings = {},
+            onCapture = {},
+            onImport = {},
+            onOpenRecord = {},
+            onOpenStream = {},
+        )
     }
 }

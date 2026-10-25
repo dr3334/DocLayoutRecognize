@@ -3,6 +3,7 @@ package com.doclayout.recognize.ui.screen
 import com.doclayout.recognize.data.model.OcrLine
 import com.doclayout.recognize.data.model.OcrLineKind
 import com.doclayout.recognize.data.model.OcrRecord
+import com.doclayout.recognize.data.local.decodeSampled
 import com.doclayout.recognize.ui.component.CircleIconButton
 import com.doclayout.recognize.ui.component.GlassCircleButton
 import com.doclayout.recognize.ui.component.Pill
@@ -28,7 +29,6 @@ import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.Spring
 import androidx.compose.animation.core.spring
 import android.graphics.Bitmap
-import android.graphics.BitmapFactory
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -48,6 +48,8 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.navigationBars
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.safeDrawingPadding
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.statusBars
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.pager.HorizontalPager
@@ -56,13 +58,18 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.State
+import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableIntStateOf
-import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.rememberCoroutineScope
@@ -80,11 +87,19 @@ import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.layout.layout
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.tooling.preview.Devices
+import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.doclayout.recognize.data.sample.sampleRecords
+import com.doclayout.recognize.ui.theme.LocalOcrColors
+import com.doclayout.recognize.ui.theme.OcrColors
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import kotlin.math.abs
 
 /**
@@ -147,6 +162,10 @@ private fun SplitResult(
 ) {
     val c = Ocr.colors
     val split = rememberSplitPaneState(initialFraction = startSplit)
+    // derivedStateOf：只在 0.4 阈值翻转时才重组 left 子树。
+    // ResizableRow 改造后拖动帧只剩 remeasure，但这里若直接读 split.fraction，
+    // left lambda 仍会每帧重跑 —— 收敛到 Boolean 后拖动帧完全不重跑
+    val compact by remember { derivedStateOf { split.fraction < 0.4f } }
 
     Box(Modifier.fillMaxSize().background(c.scrim)) {
         ResizableRow(
@@ -158,7 +177,7 @@ private fun SplitResult(
                     onBack = onBack,
                     modifier = m,
                     // 分栏拖到很窄时，顶栏只留返回，别让标题挤成两行
-                    compact = split.fraction < 0.4f,
+                    compact = compact,
                 )
             },
             right = { m ->
@@ -369,13 +388,13 @@ private fun FloatingSheet(
     // 停在哪一档也存下来：转屏回来还是同一档
     var stopIndex by rememberSaveable { mutableIntStateOf(if (startOpen) 1 else 0) }
     val anim = remember { Animatable(stops[stopIndex].value) }
-    var dragTotal by remember { mutableFloatStateOf(0f) }
+    // 不用 by 委托：sheetHeight 的 measure 阶段要读 State<Float>（动画帧只 remeasure 不重组）
+    val dragTotal = remember { mutableFloatStateOf(0f) }
+    // anim 存的是绝对 dp：转屏/折叠后 stops 随窗口尺寸重建，旧值落在错档位上 —— 重新落档
+    LaunchedEffect(peekH, halfH, fullH) { anim.snapTo(stops[stopIndex].value) }
 
     val peekPx = with(density) { peekH.toPx() }
     val fullPx = with(density) { fullH.toPx() }
-    // 手指上滑 = dy 为负 = 卡片要变高，所以这里取反
-    val dragDp = with(density) { (-dragTotal).toDp() }
-    val height = (anim.value.dp + dragDp).coerceIn(peekH, fullH)
 
     fun settleTo(index: Int) {
         stopIndex = index
@@ -398,7 +417,7 @@ private fun FloatingSheet(
         modifier = modifier
             .padding(start = 14.dp, end = 14.dp, bottom = 14.dp + navBottom)
             .fillMaxWidth()
-            .height(height)
+            .sheetHeight(peekH, fullH, anim, dragTotal)
             .shadow(elevation = 24.dp, shape = shape, clip = false)
             .clip(shape)
             .background(panelBg)
@@ -411,7 +430,7 @@ private fun FloatingSheet(
             modifier = Modifier
                 .fillMaxWidth()
                 .sheetDrag(
-                    onDrag = { total -> dragTotal = total },
+                    onDrag = { total -> dragTotal.floatValue = total },
                     onEnd = { total ->
                         // anim 的数值本身就是 dp，换成 px 才能和手指位移相加；
                         // 上滑是负位移，卡片变高，所以是减
@@ -421,7 +440,7 @@ private fun FloatingSheet(
                             // 先把"手指松开的位置"变成动画起点，再把 dragTotal 清零。
                             // 顺序反了会有 1 帧跳回旧高度。
                             anim.snapTo(with(density) { clamped.toDp() }.value)
-                            dragTotal = 0f
+                            dragTotal.floatValue = 0f
                             val nearest = stops.minByOrNull { abs(it.value - anim.value) }
                             val index = stops.indexOf(nearest ?: stops[1])
                             stopIndex = index
@@ -434,7 +453,7 @@ private fun FloatingSheet(
                             )
                         }
                     },
-                    onCancel = { dragTotal = 0f },
+                    onCancel = { dragTotal.floatValue = 0f },
                 ),
         ) {
             Box(
@@ -454,10 +473,33 @@ private fun FloatingSheet(
             )
         }
 
-        if (height > peekH + 8.dp) {
+        // 正文显隐用离散档位而不是连续高度：拖动中每帧增删 PanelBody（含 WebView 链）
+        // 的节点是逐帧组合开销；拖动中正文等松手吸附后才出现，属可接受的观感变化
+        if (stopIndex > 0) {
             PanelBody(record = record, modifier = Modifier.weight(1f))
         }
     }
+}
+
+
+/**
+ * 卡片高度修饰符：高度 = 当前动画值 + 手指拖动量（clamp 到 peek..full）。
+ * anim/dragTotal 都在 layout（测量）阶段读取 —— 动画帧只 remeasure 这一棵子树，
+ * 不再像旧写法那样在组合期读两个 State 交给 .height()，拖动/吸附每帧重组整卡。
+ */
+private fun Modifier.sheetHeight(
+    peekH: Dp,
+    fullH: Dp,
+    anim: Animatable<Float, *>,
+    dragTotal: State<Float>,
+): Modifier = layout { measurable, constraints ->
+    // 手指上滑 = dy 为负 = 卡片要变高，所以拖动量取反。
+    // dragTotal 以 State<Float> 接口传入（读 .value 即可，layout 阶段读 State 只触发 remeasure）
+    val hPx = (anim.value.dp + with(this@layout) { (-dragTotal.value).toDp() })
+        .coerceIn(peekH, fullH)
+        .roundToPx()
+    val p = measurable.measure(constraints.copy(minHeight = hPx, maxHeight = hPx))
+    layout(p.width, p.height) { p.placeRelative(0, 0) }
 }
 
 
@@ -741,28 +783,45 @@ private fun RealPaperStage(
             pageSpacing = 12.dp,
         ) { index ->
             val page = record.scan[index]
-            val bitmap = remember(index, page.imagePath) {
-                decodeSampled(page.imagePath, maxSide = 1440)
+            // 翻页解码走 IO + 三态：旧写法 remember 同步解码，解码直接落进滑动手势帧必掉帧
+            val imageState by produceState<PageImageState>(PageImageState.Loading, page.imagePath) {
+                val path = page.imagePath
+                val bmp = withContext(Dispatchers.IO) { decodeSampled(path, maxSide = 1440) }
+                value = if (bmp != null) PageImageState.Ready(bmp) else PageImageState.Missing
             }
+            // 系统栏让位不拍死 92/108dp：挖孔设备状态栏比 92dp 高时原图会贴死；
+            // = 对应 insets + 固定余量（顶部留返回键浮层，底部留卡片露出量）
+            val insetsTop = WindowInsets.statusBars.asPaddingValues().calculateTopPadding()
+            val insetsBottom = WindowInsets.navigationBars.asPaddingValues().calculateBottomPadding()
             Box(
                 modifier = Modifier.fillMaxSize().padding(
                     start = if (compact) 8.dp else 16.dp,
                     end = if (compact) 8.dp else 16.dp,
-                    top = 92.dp,
-                    bottom = if (compact) 96.dp else 108.dp,
+                    top = insetsTop + 64.dp,
+                    bottom = insetsBottom + (if (compact) 76.dp else 88.dp),
                 ),
                 contentAlignment = Alignment.Center,
             ) {
-                bitmap?.let { bmp ->
-                    Image(
-                        bitmap = bmp.asImageBitmap(),
+                when (val st = imageState) {
+                    PageImageState.Loading -> CircularProgressIndicator(
+                        modifier = Modifier.size(24.dp),
+                        strokeWidth = 2.dp,
+                        color = c.onScrim,
+                    )
+                    is PageImageState.Ready -> Image(
+                        bitmap = st.bitmap.asImageBitmap(),
                         contentDescription = "第 ${index + 1} 页原图",
                         contentScale = ContentScale.Fit,
                         modifier = Modifier
                             .fillMaxSize()
                             .clip(RoundedCornerShape(4.dp)),
                     )
-                } ?: Text("原图丢了（文件被删除或外部清理）", style = OcrType.Caption, color = c.onScrim)
+                    PageImageState.Missing -> Text(
+                        "原图丢了（文件被删除或外部清理）",
+                        style = OcrType.Caption,
+                        color = c.onScrim,
+                    )
+                }
             }
         }
 
@@ -806,18 +865,29 @@ private fun RealPaperStage(
 }
 
 /**
- * 按需采样解码。
- *
- * 只读 inJustDecodeBounds 那一趟几乎不耗内存，拿到原始宽高后算出 2 的幂次采样率；
- * 再解一次。试卷在这个尺寸下文字仍然清楚，但内存从 48MB 降到 ~3MB。
+ * 结果页页原图的三态：翻页解码挪到 IO 线程后，页面渲染要区分
+ * 「还在解 / 解到了 / 解不到（文件被清）」，各给一个占位。
  */
-private fun decodeSampled(path: String, maxSide: Int): Bitmap? = runCatching {
-    val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
-    BitmapFactory.decodeFile(path, bounds)
-    if (bounds.outWidth <= 0) return@runCatching null
+private sealed interface PageImageState {
+    data object Loading : PageImageState
+    data class Ready(val bitmap: Bitmap) : PageImageState
+    data object Missing : PageImageState
+}
 
-    var sample = 1
-    while (maxOf(bounds.outWidth, bounds.outHeight) / sample > maxSide) sample *= 2
-
-    BitmapFactory.decodeFile(path, BitmapFactory.Options().apply { inSampleSize = sample })
-}.getOrNull()
+/* ------------------------------------------------------------------ *
+ * 预览组：竖屏（Stacked 抽屉）与横屏（Split 分栏）两形态都要能看。
+ * 喂 sampleRecords[0]（假样例，isReal=false，不走 WebView/原图解码）。
+ * ------------------------------------------------------------------ */
+@Preview(name = "phone", showBackground = true, device = Devices.PHONE)
+@Preview(name = "landscape", showBackground = true, widthDp = 800, heightDp = 380)
+@Preview(name = "foldable", showBackground = true, device = Devices.FOLDABLE)
+@Preview(name = "tablet", showBackground = true, device = Devices.TABLET)
+@Composable
+private fun OcrResultScreenPreview() {
+    CompositionLocalProvider(LocalOcrColors provides OcrColors.Light) {
+        OcrResultScreen(
+            record = sampleRecords[0],
+            onBack = {},
+        )
+    }
+}

@@ -94,6 +94,22 @@ object OcrVlApi {
     }
 
     /**
+     * 文件版重载：读文件（数 MB 的磁盘 IO）发生在 Dispatchers.IO 里。
+     * 调用方若在主线程协程内联实参 [parse]（ByteArray 版），withContext 包不到
+     * 求值过程，等于每页在主线程整读一次文件 —— 传 File 走这个版本。
+     */
+    suspend fun parse(
+        mode: OcrMode,
+        baseUrl: String,
+        token: String,
+        imageFile: java.io.File,
+        model: String = MODEL,
+    ): VlPage {
+        val image = withContext(Dispatchers.IO) { imageFile.readBytes() }
+        return parse(mode, baseUrl, token, image, model)
+    }
+
+    /**
      * 本地 PaddleX 服务：一步出结果，没有 jobId / 轮询。
      *
      *   POST {base}/layout-parsing

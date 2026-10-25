@@ -1,5 +1,6 @@
 package com.doclayout.recognize.ui.component
 
+import com.doclayout.recognize.data.local.decodeSampled
 import com.doclayout.recognize.data.model.OcrRecord
 import com.doclayout.recognize.ui.icon.IconBack
 import com.doclayout.recognize.ui.icon.IconChevronRight
@@ -10,7 +11,6 @@ import com.doclayout.recognize.ui.theme.OcrType
 import com.doclayout.recognize.ui.theme.Radii
 import com.doclayout.recognize.ui.theme.Space
 import android.graphics.Bitmap
-import android.graphics.BitmapFactory
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
@@ -36,6 +36,8 @@ import androidx.compose.material3.Switch
 import androidx.compose.material3.SwitchDefaults
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -124,6 +126,8 @@ fun OcrTopBar(
  * 主操作卡：占屏幕上半部、两块并排。
  * primary = true 用整块珊瑚色 —— DESIGN.md 允许珊瑚铺满"全幅卡片"，
  * 但同一屏只能有一块，否则强调就失效了。
+ *
+ * @param height 卡片高度：默认 198dp 保持原观感；矮屏模式传 160dp 兜底（见 OcrHomeScreen）
  */
 @Composable
 fun ActionCard(
@@ -132,6 +136,7 @@ fun ActionCard(
     primary: Boolean,
     onClick: () -> Unit,
     modifier: Modifier = Modifier,
+    height: Dp = 198.dp,
     icon: @Composable (Color) -> Unit,
 ) {
     val c = Ocr.colors
@@ -142,7 +147,7 @@ fun ActionCard(
 
     Column(
         modifier = modifier
-            .height(198.dp)
+            .height(height)
             .clip(RoundedCornerShape(Radii.lg))
             .background(bg)
             .border(1.dp, if (primary) c.primaryPressed.copy(alpha = 0.35f) else c.hairline, RoundedCornerShape(Radii.lg))
@@ -183,8 +188,13 @@ fun PaperThumb(
 
     // 真实扫描记录的缩略图就是那张照片；假样例才用 Canvas 画"一页纸"。
     // 采样到 360px：卡片最大也就 168dp 高，按 2.5x 屏算够用了，还省内存。
+    // 解码走 IO 线程的 produceState：拍照原图 4-8MB，RecordCard 是首页列表 item，
+    // 同步解码会让首进首页串行卡秒级。未就绪时保留 creamStrong 底色占位。
     if (imagePath != null) {
-        val bitmap = remember(imagePath) { decodeThumb(imagePath, 360) }
+        val bitmap by produceState<Bitmap?>(null, imagePath) {
+            val path = imagePath ?: return@produceState
+            value = decodeSampled(path, 360)
+        }
         Box(
             modifier = modifier
                 .clip(RoundedCornerShape(Radii.md))
@@ -553,13 +563,3 @@ fun Dot(alpha: Float = 0.4f) {
         drawCircle(color.copy(alpha = alpha))
     }
 }
-
-/** 缩略图采样解码：和结果页那套逻辑一样，只是目标尺寸更小 */
-private fun decodeThumb(path: String, maxSide: Int): Bitmap? = runCatching {
-    val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
-    BitmapFactory.decodeFile(path, bounds)
-    if (bounds.outWidth <= 0) return@runCatching null
-    var sample = 1
-    while (maxOf(bounds.outWidth, bounds.outHeight) / sample > maxSide) sample *= 2
-    BitmapFactory.decodeFile(path, BitmapFactory.Options().apply { inSampleSize = sample })
-}.getOrNull()

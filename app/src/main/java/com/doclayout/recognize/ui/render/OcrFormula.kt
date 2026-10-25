@@ -1,6 +1,7 @@
 package com.doclayout.recognize.ui.render
 
 import com.doclayout.recognize.ui.theme.Ocr
+import android.content.Context
 import android.util.LruCache
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.layout.BoxWithConstraints
@@ -8,7 +9,12 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.drawscope.drawIntoCanvas
@@ -21,6 +27,8 @@ import androidx.compose.ui.unit.sp
 import io.ratex.RaTeXEngine
 import io.ratex.RaTeXFontLoader
 import io.ratex.RaTeXRenderer
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 
 /**
  * 公式渲染：RaTeX（Rust 排版 → display list → Canvas 矢量）。
@@ -48,6 +56,24 @@ private object OcrTexCache {
                 .also { cache.put(key, it) }
         }.getOrNull()
     }
+
+    /** 纯内存查缓存，不触发解析 —— 组合期可以安全调，未命中交给 produceState 后台补 */
+    fun getIfPresent(tex: String, sizePx: Float, colorArgb: Int): RaTeXRenderer? =
+        tex.trim().takeIf { it.isNotEmpty() }?.let { cache.get("$sizePx|$colorArgb|$it") }
+}
+
+/**
+ * RaTeX 字体预加载单例：ensureLoaded 要读字体文件（磁盘 IO），不能留在组合期做。
+ * ready 是全局 State —— 一处预加载成功，所有 OcrTex 同帧拿到 fontsReady=true。
+ */
+private object RaTeXFonts {
+    val ready = mutableStateOf(false)
+
+    fun preload(context: Context) {
+        if (ready.value) return
+        runCatching { RaTeXFontLoader.ensureLoaded(context.applicationContext) }
+            .onSuccess { ready.value = true }
+    }
 }
 
 /**
@@ -69,20 +95,33 @@ fun OcrTex(
 
     // 字体必须先注册进 RaTeX（它自己按名字取 Typeface）。
     // 少了这一步不会抛异常，只会画出"没有字形的公式"——只剩分数线，最容易被忽略。
-    val fontsReady = remember {
-        runCatching { RaTeXFontLoader.ensureLoaded(context) }.isSuccess
+    // 加载（磁盘 IO）挪到 LaunchedEffect+IO，这里只读全局就绪态
+    val fontsReady by remember { RaTeXFonts.ready }
+    LaunchedEffect(Unit) { withContext(Dispatchers.IO) { RaTeXFonts.preload(context) } }
+
+    // 缓存命中直接同步用（无挂起开销）；未命中走 produceState 在 Default 线程解析，
+    // 期间走下面的 fallback 纯文本分支，解析完成无缝换 Canvas。
+    // 结果页一屏多个公式行，解析（RaTeXEngine.parseBlocking）连续阻塞会拖慢首帧
+    val initial = remember(tex, sizePx, color) {
+        if (fontsReady) OcrTexCache.getIfPresent(tex, sizePx, color.toArgb()) else null
     }
-    val renderer = remember(tex, sizePx, color, fontsReady) {
-        if (fontsReady) OcrTexCache.get(tex, sizePx, color.toArgb()) else null
+    // 顶层直赋值写法：Compose lint 的 ProduceStateDoesNotAssignValue 有已知误报
+    // （issuetracker 349411310/376491756），`value = x?.let{…}` 与 if 表达式赋值识别不了
+    val renderer by produceState(initial, tex, sizePx, color, fontsReady) {
+        if (!fontsReady || value != null) return@produceState
+        val r = withContext(Dispatchers.Default) { OcrTexCache.get(tex, sizePx, color.toArgb()) }
+        value = r
     }
 
-    if (renderer == null) {
+    // 先读进局部值：renderer 是委托属性，Kotlin 不能对它 smart cast
+    val resolved = renderer
+    if (resolved == null) {
         Text(text = fallback ?: tex, fontSize = fontSize, color = color, modifier = modifier)
         return
     }
 
-    val wPx = renderer.widthPx
-    val hPx = renderer.totalHeightPx
+    val wPx = resolved.widthPx
+    val hPx = resolved.totalHeightPx
     if (wPx <= 0f || hPx <= 0f) {
         Text(text = fallback ?: tex, fontSize = fontSize, color = color, modifier = modifier)
         return
@@ -103,7 +142,7 @@ fun OcrTex(
                 val save = nc.save()
                 nc.translate(dx, 0f)
                 nc.scale(fit, fit)
-                renderer.draw(nc)
+                resolved.draw(nc)
                 nc.restoreToCount(save)
             }
         }

@@ -1,6 +1,7 @@
 package com.doclayout.recognize.ui.screen
 
 import com.doclayout.recognize.data.local.OcrMode
+import com.doclayout.recognize.data.remote.OcrVlApi
 import com.doclayout.recognize.ui.component.OcrTopBar
 import com.doclayout.recognize.ui.component.RowDivider
 import com.doclayout.recognize.ui.component.SectionLabel
@@ -32,21 +33,28 @@ import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.tooling.preview.Devices
+import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.doclayout.recognize.ui.theme.LocalOcrColors
+import com.doclayout.recognize.ui.theme.OcrColors
 
 /**
  * 设置页的「整页形态」：顶栏 + 内容。
  *
- * 现在 App 里的入口是抽屉（见 OcrApp 的 ModalBottomSheet），这个整页形态保留着，
- * 因为 adb 调试参数（--ei ocr 1）和以后可能的平板分栏还要用它。
+ * 现在 App 里的入口是 OcrApp 的右侧滑面板（OcrApp.kt 的面板 Box），面板本身不做
+ * insets 让位，系统栏让位由本文件 OcrSettingsScreen 的 safeDrawingPadding 负责；
+ * 这个整页形态保留着，因为 adb 调试参数（--ei ocr 1）和以后可能的平板分栏还要用它。
  *
  * 一个设置页最容易做丑的地方是"每行都一样重"。这里的办法是三层字重：
  *   小节标签（12sp / 弱化色 / 加宽字距）→ 行标题（14sp 墨色）→ 行值（13sp 弱化色）。
@@ -103,7 +111,9 @@ fun OcrSettingsScreen(
  *
  * 和上面那个整页版本的区别只有三点，缺一不可：
  *   1. 没有 [OcrTopBar] —— 顶栏属于"容器"，抽屉有自己的把手
- *   2. 不调 safeDrawingPadding() —— 抽屉已经让开过系统栏，再让一次就双倍留白
+ *   2. 不调 safeDrawingPadding() —— insets 由外层容器负责：整页/面板形态用
+ *      [OcrSettingsScreen]（内含 safeDrawingPadding）包一层；直接复用本组件时，
+ *      调用方必须自己补 insets padding，否则内容会顶进状态栏
  *   3. 不写 fillMaxSize() —— 高度交给容器决定（整页时是 weight，抽屉时按内容算）
  *
  * 抽出来的意义：设置项只有一份，页面和抽屉共用，不会出现"某天改了一边忘另一边"。
@@ -127,8 +137,8 @@ fun OcrSettingsContent(
     onExit: () -> Unit,
 ) {
     val c = Ocr.colors
-    // 正在编辑哪一项：null / "mode" / "url" / "token"
-    var editing by remember { mutableStateOf<String?>(null) }
+    // 正在编辑哪一项：null / "mode" / "url" / "token"（saveable：编辑中转屏弹窗不丢）
+    var editing by rememberSaveable { mutableStateOf<String?>(null) }
 
     when (editing) {
         "mode" -> ModeChoiceDialog(
@@ -429,3 +439,33 @@ private fun ModeChoiceDialog(
 /** Token 只露前后各 4 位，截图/演示时不会把整串 Key 泄出去 */
 private fun maskToken(token: String): String =
     if (token.length <= 10) "••••" else token.take(4) + "••••" + token.takeLast(4)
+
+/* ------------------------------------------------------------------ *
+ * 预览组：设置面板宽/窄两形态（右侧滑面板在横屏平板下更宽）。无 IO，Layoutlib 可跑。
+ * ------------------------------------------------------------------ */
+@Preview(name = "phone", showBackground = true, device = Devices.PHONE)
+@Preview(name = "landscape", showBackground = true, widthDp = 800, heightDp = 380)
+@Preview(name = "foldable", showBackground = true, device = Devices.FOLDABLE)
+@Preview(name = "tablet", showBackground = true, device = Devices.TABLET)
+@Composable
+private fun OcrSettingsScreenPreview() {
+    CompositionLocalProvider(LocalOcrColors provides OcrColors.Light) {
+        OcrSettingsScreen(
+            dark = false,
+            onDarkChange = {},
+            recordCount = 3,
+            mode = OcrMode.Cloud,
+            baseUrl = OcrVlApi.DEFAULT_BASE,
+            model = OcrVlApi.MODEL,
+            credential = "",
+            deviceReady = null,
+            onModeChange = {},
+            onBaseUrlChange = {},
+            onCredentialChange = {},
+            onClearRecords = {},
+            onOpenModels = {},
+            onBack = {},
+            onExit = {},
+        )
+    }
+}

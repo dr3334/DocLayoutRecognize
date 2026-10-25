@@ -16,6 +16,7 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.safeDrawingPadding
 import androidx.compose.foundation.layout.size
@@ -42,6 +43,8 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.saveable.Saver
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -107,8 +110,12 @@ fun OcrModelScreen(
 
     // ── 文件清单与勾选：repo → 清单 / repo → 勾选的 path 集合
     var catalogs by remember { mutableStateOf<Map<String, List<LocalCatalogFile>>>(emptyMap()) }
-    var selectedByRepo by remember { mutableStateOf<Map<String, Set<String>>>(emptyMap()) }
-    var expandedRepo by remember { mutableStateOf<String?>(null) }
+    // 勾选的下载清单要跨进程回收存活（勾完半路被杀，回来还得从"全选"再来一遍）；
+    // repo/path 都不含 \u0001 控制字符，用它拼接成扁平串列表存取最省事
+    var selectedByRepo by rememberSaveable(stateSaver = SelectedPathsSaver) {
+        mutableStateOf<Map<String, Set<String>>>(emptyMap())
+    }
+    var expandedRepo by rememberSaveable { mutableStateOf<String?>(null) }
     var refreshingRepo by remember { mutableStateOf<String?>(null) }
 
     // ── 操作态
@@ -298,10 +305,13 @@ fun OcrModelScreen(
         }
 
         // ── 轻提示浮条（同 OcrStreamScreen 的样式：深色胶囊、底部居中、自动消失）
+        // navigationBarsPadding 让开三键导航栏：fillMaxSize 根 Box 不吃 insets，
+        // 只留 32dp 会被约 48dp 的导航栏盖住下半截
         AnimatedVisibility(
             visible = hint != null,
             modifier = Modifier
                 .align(Alignment.BottomCenter)
+                .navigationBarsPadding()
                 .padding(bottom = Space.xl),
             enter = fadeIn() + slideInVertically { it / 3 },
             exit = fadeOut() + slideOutVertically { it / 3 },
@@ -619,6 +629,18 @@ private fun ChipButton(
 /** 集合增删一个元素（勾选行用） */
 private fun toggle(set: Set<String>, item: String): Set<String> =
     if (item in set) set - item else set + item
+
+/** 勾选的下载清单的 Saver：Map<repo, paths> ↔ ["repo\u0001path", ...]（rememberSaveable 用） */
+private val SelectedPathsSaver = Saver<Map<String, Set<String>>, List<String>>(
+    save = { state -> state.flatMap { (repo, paths) -> paths.map { "$repo\u0001$it" } } },
+    restore = { saved ->
+        saved.mapNotNull { entry ->
+            val parts = entry.split('\u0001')
+            if (parts.size == 2) parts[0] to parts[1] else null
+        }.groupBy(keySelector = { it.first }, valueTransform = { it.second })
+            .mapValues { (_, paths) -> paths.toSet() }
+    },
+)
 
 /** 仓库状态徽标文案 */
 private fun repoStatus(tasks: List<LocalModelTask>, running: Boolean): String = when {
