@@ -18,6 +18,7 @@ import com.doclayout.recognize.data.remote.OcrVlApi
 import com.doclayout.recognize.data.sample.sampleRecords
 import com.doclayout.recognize.ui.screen.OcrStreamScreen
 import com.doclayout.recognize.ui.screen.OcrPipelineScreen
+import com.doclayout.recognize.ui.screen.OcrCropScreen
 import com.doclayout.recognize.ui.screen.OcrSettingsScreen
 import com.doclayout.recognize.ui.screen.OcrSettingsContent
 import com.doclayout.recognize.ui.screen.OcrHomeScreen
@@ -101,7 +102,7 @@ import java.io.File
  * ─────────────────────────────────────────────────────────────
  */
 
-private enum class OcrRoute { Home, Result, Stream, Models, Pipeline, StreamRec }
+private enum class OcrRoute { Home, Result, Stream, Models, Pipeline, StreamRec, Crop }
 
 /** 一次扫描的整体状态。UI 只认这三个，不关心底下有多少张图 */
 private sealed interface ScanState {
@@ -120,6 +121,12 @@ private val uriListSaver = Saver<List<Uri>?, List<String>>(
 private val stringListSaver = Saver<List<String>?, List<String>>(
     save = { it.orEmpty() },
     restore = { saved -> saved.ifEmpty { null } },
+)
+
+/** List<String>（非空语义）的 Saver：裁剪队列的文件/结果列表用，避免可空泛型污染 */
+private val stringListNonNullSaver = Saver<List<String>, List<String>>(
+    save = { it },
+    restore = { it },
 )
 
 /** runScan 的一页输入：识别用的临时页文件（PDF 已先栅格化成页 PNG，与图片页同构） */
@@ -180,6 +187,7 @@ fun OcrApp(
                 4 -> OcrRoute.Pipeline
                 5 -> OcrRoute.Models
                 6 -> OcrRoute.StreamRec
+                7 -> OcrRoute.Crop
                 else -> OcrRoute.Home
             }
         )
@@ -250,6 +258,18 @@ fun OcrApp(
         mutableStateOf<List<String>?>(null)
     }
     var pendingStreamMerge by rememberSaveable { mutableStateOf(false) }
+
+    // ── 纸张裁剪队列（拍照/相册导入统一先过裁剪页，算法在 data 层 DocumentBoundary）：
+    // pendingCropUris = 选中的原图 → stage 成文件逐张裁剪（cropFiles/cropIndex）→
+    // 每张产出（裁剪图或原图）进 cropResults → 全部完成后组装回 pendingUris，
+    // 走既有识别链（多选弹「合并/分开」，单张直跑；端侧再分流到流式渲染页）。
+    // saveable：旋转/重建后裁剪进度不丢，也不会重复 stage
+    var pendingCropUris by rememberSaveable(stateSaver = uriListSaver) {
+        mutableStateOf<List<Uri>?>(null)
+    }
+    var cropFiles by rememberSaveable(stateSaver = stringListNonNullSaver) { mutableStateOf<List<String>>(emptyList()) }
+    var cropResults by rememberSaveable(stateSaver = stringListNonNullSaver) { mutableStateOf<List<String>>(emptyList()) }
+    var cropIndex by rememberSaveable { mutableIntStateOf(0) }
 
     /**
      * 端侧导入 → 流式识别渲染页：把输入落地成页文件（普通图 stageUri；PDF 逐页栅格化，
@@ -471,7 +491,7 @@ fun OcrApp(
     // 相册多选（Photo Picker，API 26+ 走系统文件选择器，任何版本都不需要权限）
     val pickImages = rememberLauncherForActivityResult(
         ActivityResultContracts.PickMultipleVisualMedia(9),
-    ) { uris -> if (uris.isNotEmpty()) pendingUris = uris }
+    ) { uris -> if (uris.isNotEmpty()) pendingCropUris = uris }
 
     // PDF 试卷选择（WP5）：Photo Picker 只认图片，试卷 PDF 一般在下载/文件目录，
     // 走 OpenDocument("application/pdf") 单选一份。OpenDocument 不需要存储权限。
@@ -486,7 +506,7 @@ fun OcrApp(
         ActivityResultContracts.TakePicture(),
     ) { ok ->
         val uri = camUri
-        if (ok && uri != null) pendingUris = listOf(uri)
+        if (ok && uri != null) pendingCropUris = listOf(uri)
     }
 
     /**
@@ -574,6 +594,39 @@ fun OcrApp(
                     onOpenStream = { route = OcrRoute.Stream },
                     initialPath = startPipelinePath,
                 )
+
+                // 纸张裁剪页：拍照/相册导入逐张过裁剪；全部完成后组装回 pendingUris
+                // 走既有识别链（合并/分开弹窗 + 端侧流式渲染分流）。cropFiles 与
+                // cropIndex 由上面的 stage 效应维护；异常兜底回首页
+                OcrRoute.Crop -> {
+                    val cropPath = cropFiles.getOrNull(cropIndex)
+                    if (cropPath == null) {
+                        route = OcrRoute.Home
+                    } else {
+                        OcrCropScreen(
+                            onBack = {
+                                pendingCropUris = null
+                                cropFiles = emptyList(); cropResults = emptyList(); cropIndex = 0
+                                route = OcrRoute.Home
+                            },
+                            imagePath = cropPath,
+                            index = cropIndex + 1,
+                            total = cropFiles.size,
+                            onDone = { cropped ->
+                                cropResults = cropResults + (cropped ?: cropPath)
+                                if (cropIndex + 1 < cropFiles.size) {
+                                    cropIndex += 1
+                                } else {
+                                    // 最后一张：交给既有识别链（多选弹合并/分开，单张直跑）
+                                    pendingUris = cropResults.map { Uri.fromFile(File(it)) }
+                                    pendingCropUris = null
+                                    cropFiles = emptyList(); cropResults = emptyList(); cropIndex = 0
+                                    route = OcrRoute.Home
+                                }
+                            },
+                        )
+                    }
+                }
 
                 // 端侧模型管理页：下载/暂停/删除/就绪状态（深链 --ei ocr 5）
                 OcrRoute.Models -> OcrModelScreen(
@@ -712,6 +765,37 @@ fun OcrApp(
             LaunchedEffect(uri) {
                 pendingPdf = null
                 startScanOrStream(emptyList(), merge = true, pdfUri = uri)
+            }
+        }
+
+        // 裁剪队列：原图 stage 成文件后逐张进裁剪页（stage 完成以 cropFiles 对齐为准，
+        // 旋转重建后不重复 stage）
+        pendingCropUris?.let { uris ->
+            if (cropFiles.size != uris.size) {
+                LaunchedEffect(uris) {
+                    val staged = mutableListOf<String>()
+                    uris.forEachIndexed { i, u ->
+                        runCatching { store.stageUri(context, u, i) }
+                            .getOrNull()?.let { staged += it.absolutePath }
+                    }
+                    if (staged.isEmpty()) {
+                        pendingCropUris = null
+                        scanState = ScanState.Failed("读不到选中的图片")
+                    } else {
+                        cropFiles = staged
+                        cropIndex = 0
+                        cropResults = emptyList()
+                        route = OcrRoute.Crop
+                    }
+                }
+            }
+        }
+
+        // 深链 --ei ocr 7 --es scanpath <路径>：直达裁剪页（调试通道，复用 scanpath 参数）
+        LaunchedEffect(Unit) {
+            val p = startPipelinePath
+            if (startRoute == 7 && !p.isNullOrBlank() && File(p).isFile) {
+                pendingCropUris = listOf(Uri.fromFile(File(p)))
             }
         }
 

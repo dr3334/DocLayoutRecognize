@@ -26,6 +26,9 @@ include("${CMAKE_CURRENT_LIST_DIR}/android_engine_sources.cmake")
 # Android 宿主自身使用日志 API，不依赖 MNN 源码 target 间接传递。
 find_library(android_log_library log REQUIRED)
 target_link_libraries(dococr_c PRIVATE ${android_log_library})
+# UVDoc 矫正 JNI 用 AndroidBitmap_*（Bitmap 像素直读直写），实现在 libjnigraphics
+find_library(android_jnigraphics_library jnigraphics REQUIRED)
+target_link_libraries(dococr_c PRIVATE ${android_jnigraphics_library})
 # 桌面 PDF 渲染器依赖外部 Poppler/posix_spawn；保留 Android 原有 Java PDF 路径。
 get_target_property(core_sources dococr_core SOURCES)
 list(FILTER core_sources EXCLUDE REGEX "(^|/)pdf_renderer\\.cpp$")

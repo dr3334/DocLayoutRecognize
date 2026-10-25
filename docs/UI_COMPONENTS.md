@@ -330,3 +330,17 @@
   的就是 KaTeX 排版（半截公式由 render.html 的 balance() 补齐）；独立公式块
   （format=latex、裸 LaTeX）由 toMarkdown 补 `$$…$$`。真机验证：分式/根号/积分/Σ
   流式与终态全部排版渲染。
+
+### 8. 纸张边界裁剪页（拍照/相册导入统一入口 + UVDoc 卷曲矫正）
+
+| | |
+|---|---|
+| 属于哪个文件 | `ui/screen/OcrCropScreen.kt`（页面）；`data/local/DocumentBoundary.kt`（四角检测/透视校正，Kotlin 对译 suishou 的 Java 实现）；`data/local/UvdocModel.kt`（模型下载/校验/矫正门面）；`app/src/main/cpp/uvdoc_unwarp.cpp`（MNN 推理 + 前后处理 native） |
+| 用了什么组件 | 官方 OpenCV Android SDK（`org.opencv:opencv:4.12.0` Maven，Canny+Otsu→findContours→四边形→warpPerspective）；UVDoc MNN INT8 模型（ModelScope `dr3334/UVDoc-mnn` 的 8.3MB 混合精度版，输入 712×488 BGR，输出 45×31 反向采样网格）；`pointerInput + detectDragGestures`（角手柄拖动/整框平移，key 不含四角状态防手势重启——同 sheetDrag 的坑）；`rememberSaveable` 队列（旋转不丢进度） |
+| 一句话职责 | 拍照/相册导入的图先自动找纸张四角（失败回退人工拖动），确认时做透视校正 + 可选 UVDoc 卷曲矫正（展平弯曲书页），产物再进既有识别链（端侧→流式渲染页，云端/本地→runScan）。 |
+
+- **数据流**：拍照/相册 → `pendingCropUris`（saveable）→ stage 成文件逐张进裁剪页（`cropFiles/cropIndex/cropResults`）→ 每张「确认裁剪」（透视 warp → UVDoc 展平，失败回退透视图）或「不裁剪」（原图）→ 全部完成后组装回 `pendingUris` 走既有识别链（多选弹「合并/分开」不变）。PDF 不进裁剪（电子件无纸张边界）。
+- **检测算法**（data 层 DocumentBoundary）：降采样 ≤960 灰度 → Canny(50,150)+闭运算 与 OTSU 双通道 → findContours → 面积 12%~98.5% 过滤 → approxPolyDP 四边形 → 质心极角排序四角（左上锚定）。失败/白纸浅背景回退全图四角 + 提示手动拖。
+- **UVDoc 卷曲矫正**：独立 8.3MB 模型（不进引擎就绪判定，缺失不影响任何识别功能）；裁剪页内联下载（SHA-256 校验）；推理在 native（前后处理对译仓库 uvdoc_math.cpp 的 align_corners/zero-padding 约定，**不走 OpenCV remap**——README 明确其坐标约定不保证逐点一致）；确认流程 = 透视校正 → UVDoc 展平（IO 线程，长边 ≤1600 内存安全域）→ 识别。
+- **深链**：`--ei ocr 7 --es scanpath <路径>` 直达裁剪页（复用 scanpath 参数）。
+- 真机验证：自动四角贴合、拖角/拖框、透视校正产物、UVDoc 开/关 A/B（关闭轮可见轻微波形、开启轮平直）、不裁剪直通、相册导入路由、端侧识别链回归全部通过。

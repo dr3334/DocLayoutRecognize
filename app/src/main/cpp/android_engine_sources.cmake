@@ -82,3 +82,5 @@ android_engine_source(dococr_c printed_page_mnn_backend.cpp)
 
 target_sources(dococr_c PRIVATE "${CMAKE_CURRENT_LIST_DIR}/android_recognition_stream.cpp")
 target_sources(dococr_c PRIVATE "${CMAKE_CURRENT_LIST_DIR}/android_region_recognition.cpp")
+# UVDoc MNN 卷曲矫正（拍照裁剪阶段 B）：前后处理自带实现（对译仓库 uvdoc_math.cpp）
+target_sources(dococr_c PRIVATE "${CMAKE_CURRENT_LIST_DIR}/uvdoc_unwarp.cpp")
