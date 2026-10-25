@@ -1,0 +1,4 @@
+# 反馈通道配置示例（追加到 local.properties，仓库无明文）：
+# feedback.token=github_pat_xxx   # GitHub 细粒度 PAT：仅 dr3334/DocLayoutRecognize 的 Issues 读写
+# feedback.email=you@example.com  # 邮件通道预填收件人
+# feedback.repo=dr3334/DocLayoutRecognize

@@ -49,6 +49,13 @@ android {
         // 预置 Access Token：设置页里没填过时用它兜底（见 OcrSettingsStore.credential）。
         // 值来自 local.properties 的 ocr.token，仓库里看不到明文。
         buildConfigField "String", "OCR_TOKEN", "\"${localProps.getProperty('ocr.token', '')}\""
+        // 反馈通道配置（同样来自 local.properties，仓库无明文）：
+        //   feedback.token  = GitHub 细粒度 PAT（仅该仓库 Issues 写权限），不配则 GitHub 通道停用
+        //   feedback.email  = 接收反馈的邮箱（邮件通道预填收件人；不配则由用户手填）
+        //   feedback.repo   = 目标仓库（默认 dr3334/DocLayoutRecognize）
+        buildConfigField "String", "FEEDBACK_TOKEN", "\"${localProps.getProperty('feedback.token', '')}\""
+        buildConfigField "String", "FEEDBACK_EMAIL", "\"${localProps.getProperty('feedback.email', '')}\""
+        buildConfigField "String", "FEEDBACK_REPO", "\"${localProps.getProperty('feedback.repo', 'dr3334/DocLayoutRecognize')}\""
     }
 
     // mnn_prebuilt.cmake 读 NDK source.properties 逐段精确比对，版本不符 configure 直接失败；

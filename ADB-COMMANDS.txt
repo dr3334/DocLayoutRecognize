@@ -120,8 +120,12 @@ adb shell "run-as com.doclayout.recognize sh -c 'mkdir -p files/inbox && cat > f
 & adb shell am force-stop com.doclayout.recognize
 & adb shell am start -n com.doclayout.recognize/.MainActivity --ei ocr 7 --es scanpath /data/user/0/com.doclayout.recognize/files/inbox/paper.jpg
 
+# 3.14 反馈页（体验/识别问题三通道）
+& adb shell am force-stop com.doclayout.recognize
+& adb shell am start -n com.doclayout.recognize/.MainActivity --ei ocr 8
+
 参数速查：
-  ocr      0=首页  1=设置  2=结果页  3=流式演示  4=流水识别测试  5=端侧模型  7=纸张裁剪  6=流式识别渲染
+  ocr      0=首页  1=设置  2=结果页  3=流式演示  4=流水识别测试  5=端侧模型  7=纸张裁剪  8=反馈  6=流式识别渲染
   dark     1=深色
   empty    1=无记录空状态（同时禁用示例数据）
   record   第几条记录（从 0 开始）

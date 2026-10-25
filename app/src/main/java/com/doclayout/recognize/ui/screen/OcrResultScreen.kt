@@ -13,6 +13,7 @@ import com.doclayout.recognize.ui.icon.IconBack
 import com.doclayout.recognize.ui.icon.IconChevronDown
 import com.doclayout.recognize.ui.icon.IconCopy
 import com.doclayout.recognize.ui.icon.IconExport
+import com.doclayout.recognize.ui.icon.IconFeedback
 import com.doclayout.recognize.ui.layout.OcrLayoutMode
 import com.doclayout.recognize.ui.layout.ResizableRow
 import com.doclayout.recognize.ui.layout.RestoreSplitPill
@@ -118,12 +119,13 @@ import kotlin.math.abs
 fun OcrResultScreen(
     record: OcrRecord,
     onBack: () -> Unit,
+    onFeedback: () -> Unit = {},
     startOpen: Boolean = false,
     startSplit: Float = 0.5f,
 ) {
     when (rememberOcrWindowInfo().layout) {
-        OcrLayoutMode.Stacked -> StackedResult(record, onBack, startOpen)
-        OcrLayoutMode.Split -> SplitResult(record, onBack, startSplit)
+        OcrLayoutMode.Stacked -> StackedResult(record, onBack, onFeedback, startOpen)
+        OcrLayoutMode.Split -> SplitResult(record, onBack, onFeedback, startSplit)
     }
 }
 
@@ -133,12 +135,13 @@ fun OcrResultScreen(
 private fun StackedResult(
     record: OcrRecord,
     onBack: () -> Unit,
+    onFeedback: () -> Unit,
     startOpen: Boolean,
 ) {
     val c = Ocr.colors
 
     BoxWithConstraints(Modifier.fillMaxSize().background(c.scrim)) {
-        PaperStage(record = record, onBack = onBack, modifier = Modifier.fillMaxSize())
+        PaperStage(record = record, onBack = onBack, onFeedback = onFeedback, modifier = Modifier.fillMaxSize())
         FloatingSheet(
             record = record,
             peekH = 136.dp,
@@ -158,6 +161,7 @@ private fun StackedResult(
 private fun SplitResult(
     record: OcrRecord,
     onBack: () -> Unit,
+    onFeedback: () -> Unit,
     startSplit: Float,
 ) {
     val c = Ocr.colors
@@ -175,6 +179,7 @@ private fun SplitResult(
                 PaperStage(
                     record = record,
                     onBack = onBack,
+                    onFeedback = onFeedback,
                     modifier = m,
                     // 分栏拖到很窄时，顶栏只留返回，别让标题挤成两行
                     compact = compact,
@@ -215,13 +220,14 @@ private fun SplitResult(
 private fun PaperStage(
     record: OcrRecord,
     onBack: () -> Unit,
+    onFeedback: () -> Unit,
     modifier: Modifier = Modifier,
     compact: Boolean = false,
 ) {
     val c = Ocr.colors
     // 真机扫描：左边就是那张照片本身，没必要再用假纸面模拟
     if (record.isReal) {
-        RealPaperStage(record = record, onBack = onBack, modifier = modifier, compact = compact)
+        RealPaperStage(record = record, onBack = onBack, onFeedback = onFeedback, modifier = modifier, compact = compact)
         return
     }
     BoxWithConstraints(modifier = modifier, contentAlignment = Alignment.Center) {
@@ -299,7 +305,7 @@ private fun PaperStage(
                         maxLines = 1,
                     )
                 }
-                GlassCircleButton(onClick = {}) { IconExport(c.onScrim, size = 17.dp) }
+                GlassCircleButton(onClick = onFeedback) { IconFeedback(c.onScrim, size = 17.dp) }
             } else {
                 Spacer(Modifier.weight(1f))
             }
@@ -770,6 +776,7 @@ private fun ResultLine(line: OcrLine) {
 private fun RealPaperStage(
     record: OcrRecord,
     onBack: () -> Unit,
+    onFeedback: () -> Unit,
     modifier: Modifier = Modifier,
     compact: Boolean = false,
 ) {
@@ -857,6 +864,9 @@ private fun RealPaperStage(
                     background = c.scrim.copy(alpha = 0.5f),
                     color = c.onScrim,
                 )
+                Spacer(Modifier.width(Space.xs))
+                // 识别问题反馈（带本记录的原图与识别结果，见 OcrFeedbackScreen）
+                GlassCircleButton(onClick = onFeedback) { IconFeedback(c.onScrim, size = 17.dp) }
             } else {
                 Spacer(Modifier.weight(1f))
             }

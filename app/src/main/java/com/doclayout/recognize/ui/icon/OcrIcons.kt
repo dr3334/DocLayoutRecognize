@@ -194,8 +194,7 @@ fun IconCopy(tint: Color, size: Dp = 18.dp, stroke: Dp = 1.5.dp, modifier: Modif
     }
 
 @Composable
-fun IconExport(tint: Color, size: Dp = 18.dp, stroke: Dp = 1.5.dp, modifier: Modifier = Modifier) =
-    Glyph(tint, size, stroke, modifier) { w, c ->
+fun IconExport(tint: Color, size: Dp = 18.dp, stroke: Dp = 1.5.dp, modifier: Modifier = Modifier) =    Glyph(tint, size, stroke, modifier) { w, c ->
         val s = strokeOf(stroke)
         drawLine(c, Offset(w * 0.5f, w * 0.62f), Offset(w * 0.5f, w * 0.12f), s.width, StrokeCap.Round)
         drawPath(
@@ -238,3 +237,29 @@ fun SparkMark(tint: Color, size: Dp = 16.dp, modifier: Modifier = Modifier) {
         drawPath(p, tint)
     }
 }
+
+/** 反馈（对话气泡）：圆角气泡 + 左下尾巴 + 两个点，反馈入口通用图标 */
+@Composable
+fun IconFeedback(tint: Color, size: Dp = 18.dp, stroke: Dp = 1.5.dp, modifier: Modifier = Modifier) =
+    Glyph(tint, size, stroke, modifier) { w, c ->
+        val s = strokeOf(stroke)
+        drawRoundRect(
+            c,
+            topLeft = Offset(w * 0.14f, w * 0.18f),
+            size = Size(w * 0.72f, w * 0.50f),
+            cornerRadius = CornerRadius(w * 0.16f),
+            style = s,
+        )
+        drawPath(
+            Path().apply {
+                moveTo(w * 0.30f, w * 0.68f)
+                lineTo(w * 0.30f, w * 0.84f)
+                lineTo(w * 0.46f, w * 0.68f)
+                close()
+            },
+            c,
+        )
+        drawCircle(c, radius = s.width * 0.8f, center = Offset(w * 0.38f, w * 0.43f))
+        drawCircle(c, radius = s.width * 0.8f, center = Offset(w * 0.50f, w * 0.43f))
+        drawCircle(c, radius = s.width * 0.8f, center = Offset(w * 0.62f, w * 0.43f))
+    }

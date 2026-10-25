@@ -77,6 +77,8 @@ fun OcrSettingsScreen(
     onClearRecords: () -> Unit,
     /** 「管理端侧模型」入口 → OcrRoute.Models */
     onOpenModels: () -> Unit,
+    /** 「反馈与建议」入口 → OcrRoute.Feedback（体验反馈） */
+    onFeedback: () -> Unit = {},
     onBack: () -> Unit,
     onExit: () -> Unit,
 ) {
@@ -101,6 +103,7 @@ fun OcrSettingsScreen(
             onCredentialChange = onCredentialChange,
             onClearRecords = onClearRecords,
             onOpenModels = onOpenModels,
+            onFeedback = onFeedback,
             onExit = onExit,
         )
     }
@@ -134,6 +137,7 @@ fun OcrSettingsContent(
     onCredentialChange: (String) -> Unit,
     onClearRecords: () -> Unit,
     onOpenModels: () -> Unit,
+    onFeedback: () -> Unit = {},
     onExit: () -> Unit,
 ) {
     val c = Ocr.colors
@@ -302,6 +306,8 @@ fun OcrSettingsContent(
             SectionLabel("关于")
             SettingCard {
                 SettingRow(label = "版本", value = "1.0.0")
+                RowDivider()
+                SettingRow(label = "反馈与建议", value = "体验 · 识别问题", onClick = onFeedback)
                 RowDivider()
                 SettingRow(label = "设计风格", value = "Claude · design-md", onClick = {})
                 RowDivider()

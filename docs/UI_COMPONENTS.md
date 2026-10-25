@@ -344,3 +344,16 @@
 - **UVDoc 卷曲矫正**：独立 8.3MB 模型（不进引擎就绪判定，缺失不影响任何识别功能）；裁剪页内联下载（SHA-256 校验）；推理在 native（前后处理对译仓库 uvdoc_math.cpp 的 align_corners/zero-padding 约定，**不走 OpenCV remap**——README 明确其坐标约定不保证逐点一致）；确认流程 = 透视校正 → UVDoc 展平（IO 线程，长边 ≤1600 内存安全域）→ 识别。
 - **深链**：`--ei ocr 7 --es scanpath <路径>` 直达裁剪页（复用 scanpath 参数）。
 - 真机验证：自动四角贴合、拖角/拖框、透视校正产物、UVDoc 开/关 A/B（关闭轮可见轻微波形、开启轮平直）、不裁剪直通、相册导入路由、端侧识别链回归全部通过。
+
+### 9. 反馈页（体验/识别问题 · 三通道）
+
+| | |
+|---|---|
+| 属于哪个文件 | `ui/screen/OcrFeedbackScreen.kt`（页面）；`data/local/FeedbackClient.kt`（打包/GitHub/邮件/分享，data 层无 Compose）；图标 `ui/icon/OcrIcons.kt` 的 IconFeedback |
+| 用了什么组件 | OutlinedTextField（描述/联系方式）；`java.util.zip`（反馈包）；HttpURLConnection（GitHub Issues API）；FileProvider（files-path `feedback/`，见 res/xml/file_paths.xml）；系统 chooser（邮件/分享） |
+| 一句话职责 | 体验/识别问题反馈——识别问题自动附原图与识别结果，三条通道保底：GitHub Issue（直连，文本+识别结果内联）、邮件（完整 zip 附件，应用自身无需外网）、导出反馈包（系统分享，微信/QQ/网盘）。国内 GitHub 不可达时后两条就是设计内的备用方案。 |
+
+- **入口**：设置 → 关于 →「反馈与建议」（体验类）；结果页顶栏反馈按钮（识别类，带当前记录；深链 `--ei ocr 8` 直达）。
+- **反馈包结构**：feedback.json（类型/描述/联系方式/版本/设备/记录元信息）+ 识别问题时 `原图-p{n}.jpg`、`识别结果-p{n}.md`（来自 filesDir/ocr/<记录id>/）。
+- **GitHub Token**：local.properties 的 `feedback.token`（细粒度 PAT，仅目标仓库 Issues 写权限）→ BuildConfig.FEEDBACK_TOKEN；未配置则通道停用并提示走备用。`feedback.email`（邮件预填收件人）与 `feedback.repo` 同理。
+- **注意**：GitHub Issue API 不传二进制，识别原图只走邮件/导出通道（页面文案已说明）。

@@ -4,4 +4,6 @@
      别的 App 通过这个 Uri 只能拿到自己刚拍的那张。 -->
 <paths>
     <cache-path name="camera" path="camera/" />
+    <!-- 反馈包（filesDir/feedback/）：邮件/分享通道的 zip 附件，只暴露这一目录 -->
+    <files-path name="feedback" path="feedback/" />
 </paths>

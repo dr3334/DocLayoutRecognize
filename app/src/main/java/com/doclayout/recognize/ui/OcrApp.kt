@@ -19,6 +19,7 @@ import com.doclayout.recognize.data.sample.sampleRecords
 import com.doclayout.recognize.ui.screen.OcrStreamScreen
 import com.doclayout.recognize.ui.screen.OcrPipelineScreen
 import com.doclayout.recognize.ui.screen.OcrCropScreen
+import com.doclayout.recognize.ui.screen.OcrFeedbackScreen
 import com.doclayout.recognize.ui.screen.OcrSettingsScreen
 import com.doclayout.recognize.ui.screen.OcrSettingsContent
 import com.doclayout.recognize.ui.screen.OcrHomeScreen
@@ -102,7 +103,7 @@ import java.io.File
  * ─────────────────────────────────────────────────────────────
  */
 
-private enum class OcrRoute { Home, Result, Stream, Models, Pipeline, StreamRec, Crop }
+private enum class OcrRoute { Home, Result, Stream, Models, Pipeline, StreamRec, Crop, Feedback }
 
 /** 一次扫描的整体状态。UI 只认这三个，不关心底下有多少张图 */
 private sealed interface ScanState {
@@ -188,6 +189,7 @@ fun OcrApp(
                 5 -> OcrRoute.Models
                 6 -> OcrRoute.StreamRec
                 7 -> OcrRoute.Crop
+                8 -> OcrRoute.Feedback
                 else -> OcrRoute.Home
             }
         )
@@ -270,6 +272,10 @@ fun OcrApp(
     var cropFiles by rememberSaveable(stateSaver = stringListNonNullSaver) { mutableStateOf<List<String>>(emptyList()) }
     var cropResults by rememberSaveable(stateSaver = stringListNonNullSaver) { mutableStateOf<List<String>>(emptyList()) }
     var cropIndex by rememberSaveable { mutableIntStateOf(0) }
+
+    // 反馈：识别问题反馈随附的记录（从结果页入口带进来；不做 saveable——
+    // 旋转重建后降级为体验反馈，附件从结果页重进即可）
+    var feedbackRecord by remember { mutableStateOf<OcrRecord?>(null) }
 
     /**
      * 端侧导入 → 流式识别渲染页：把输入落地成页文件（普通图 stageUri；PDF 逐页栅格化，
@@ -595,6 +601,14 @@ fun OcrApp(
                     initialPath = startPipelinePath,
                 )
 
+                // 反馈页：设置入口（体验反馈）或结果页入口（识别问题，带记录）。
+                // 三通道：GitHub Issue（直连）/ 邮件（zip 附件）/ 导出分享——国内网络
+                // GitHub 不可达时后两条就是设计内的备用方案
+                OcrRoute.Feedback -> OcrFeedbackScreen(
+                    onBack = { route = OcrRoute.Home },
+                    record = feedbackRecord,
+                )
+
                 // 纸张裁剪页：拍照/相册导入逐张过裁剪；全部完成后组装回 pendingUris
                 // 走既有识别链（合并/分开弹窗 + 端侧流式渲染分流）。cropFiles 与
                 // cropIndex 由上面的 stage 效应维护；异常兜底回首页
@@ -652,6 +666,10 @@ fun OcrApp(
                 OcrRoute.Result -> OcrResultScreen(
                     record = current,
                     onBack = { route = OcrRoute.Home },
+                    onFeedback = {
+                        feedbackRecord = current
+                        route = OcrRoute.Feedback
+                    },
                     startOpen = startOpen || current.isReal,
                     startSplit = startSplit,
                 )
@@ -720,6 +738,11 @@ fun OcrApp(
                             onOpenModels = {
                                 settingsOpen = false
                                 route = OcrRoute.Models
+                            },
+                            onFeedback = {
+                                settingsOpen = false
+                                feedbackRecord = null
+                                route = OcrRoute.Feedback
                             },
                             onBack = { settingsOpen = false },
                             onExit = onExit,
