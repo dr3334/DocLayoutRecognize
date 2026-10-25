@@ -75,9 +75,10 @@ class OcrSettingsStore(context: Context) {
             OcrMode.Cloud -> credential.isNotBlank()
             OcrMode.Local -> baseUrl.isNotBlank()
             // RecognitionController.readiness() 是纯内存快照（无磁盘 IO），同步读不卡主线程；
-            // 引擎尚未初始化/快照解析失败按"未就绪"处理。
+            // 引擎尚未初始化/快照解析失败按"未就绪"处理。用 usable：引擎已加载（ready）
+            // 也算配置就绪，否则第二次识别会被误判未配置。
             OcrMode.OnDevice -> runCatching {
-                LocalOcrEngine.get(appContext).readinessSnapshot().filesReady
+                LocalOcrEngine.get(appContext).readinessSnapshot().usable
             }.getOrDefault(false)
         }
 

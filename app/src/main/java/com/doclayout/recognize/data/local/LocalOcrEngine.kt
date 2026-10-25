@@ -128,7 +128,7 @@ class LocalOcrEngine private constructor(context: Context) {
         onStatus: ((LocalJobStatus) -> Unit)? = null,
     ): LocalScanResult {
         val ready = refreshReadiness()
-        if (!ready.filesReady) {
+        if (!ready.usable) {
             throw IllegalStateException(
                 "端侧模型还没就绪（${ready.state}）：${ready.message.ifBlank { "去 设置 → 管理端侧模型 处理" }}",
             )
@@ -183,6 +183,39 @@ class LocalOcrEngine private constructor(context: Context) {
             elapsedMs = System.currentTimeMillis() - startedAt,
             markdown = export.markdown!!,
             assetsDir = assetsDir,
+        )
+    }
+
+    /**
+     * 把**已识别完成**的引擎记录组装成 [LocalScanResult]（与 [recognizeFile] 的返回同构）。
+     * 给流式识别页的「导入队列」用：页面自己轮询会话跑到终态后，落盘历史时用本方法
+     * 取产物，不必也不应再跑一遍识别。markdown 取引擎的 document.md（插图是记录内
+     * 相对路径，交给 [OcrStore.saveOnDevice] 复制改写）；file 用规范化 source.png。
+     * 记录不存在 / 没有文字产出时返回 null，调用方跳过该页。
+     *
+     * @param modelChoice 终态状态快照里的模型选择（engineLabel 用）；缺省按 glm 展示
+     */
+    suspend fun exportOutcome(docId: String, modelChoice: String = "glm"): LocalScanResult? = withContext(Dispatchers.IO) {
+        val export = readExport(docId) ?: return@withContext null
+        if (export.markdown.isNullOrBlank()) return@withContext null
+        val recordDir = File(File(appContext.filesDir, "documents"), docId)
+        // 耗时优先取 run-manifest.json 的 timings_ms 求和（decode/layout/recognition/export），
+        // 读不到按 0 处理——历史里的耗时只是展示值，不值得为它抛错
+        val elapsed = runCatching {
+            val manifest = readTextOrNull(File(recordDir, "run-manifest.json"))?.let { JSONObject(it) }
+            val timings = manifest?.optJSONObject("timings_ms")
+            var sum = 0L
+            timings?.keys()?.forEach { k -> sum += timings.optLong(k) }
+            sum
+        }.getOrDefault(0L)
+        LocalScanResult(
+            docId = docId,
+            state = "succeeded",
+            modelChoice = modelChoice,
+            elapsedMs = elapsed,
+            markdown = export.markdown!!,
+            assetsDir = File(recordDir, "assets").takeIf { it.isDirectory },
+            inputPath = export.inputPath,
         )
     }
 
@@ -463,6 +496,15 @@ data class LocalReadiness(
 ) {
     val filesReady: Boolean get() = state == "files-ready"
     val engineReady: Boolean get() = state == "ready"
+
+    /**
+     * 「可以开始识别」的统一判定：files-ready（磁盘对账通过）**或** ready（引擎已实际加载）都算。
+     * 只认 filesReady 是个真机踩过的坑：引擎一旦加载，state 从 files-ready 变成 ready，
+     * filesReady 随之变 false —— 第二次识别（选图/导入）会被门槛误拒「模型还没就绪」，
+     * 报错文案还自相矛盾（"（ready）：本地引擎已实际加载"）。所有"要不要放行识别"的
+     * 门槛都用本属性；模型页徽标文案那种要区分两级的展示仍用 filesReady / engineReady。
+     */
+    val usable: Boolean get() = state == "files-ready" || state == "ready"
 }
 
 /** 一次识别作业的状态快照。终态：succeeded/partial/blank/cancelled/failed/missing-models。 */
@@ -597,4 +639,6 @@ data class LocalScanResult(
     val elapsedMs: Long,
     val markdown: String,
     val assetsDir: File?,
+    /** 规范化输入图（source.png）绝对路径；[exportOutcome] 填，[recognizeFile] 流程用不到 */
+    val inputPath: String? = null,
 )

@@ -161,7 +161,7 @@ fun OcrPipelineScreen(
                 // 端态门槛与 OcrApp.runScan 同源：先磁盘对账（回写引擎内存 readiness），
                 // 模型没就绪就明说，不让用户等 createInput 之后才收到晦涩的报错。
                 val ready = engine.refreshReadiness()
-                if (!ready.filesReady) {
+                if (!ready.usable) {
                     error = "模型还没就绪（${ready.state}）：${ready.message}\n去 设置 → 管理端侧模型 处理"
                     return@launch
                 }

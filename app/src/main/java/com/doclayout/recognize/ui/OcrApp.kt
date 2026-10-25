@@ -116,6 +116,12 @@ private val uriListSaver = Saver<List<Uri>?, List<String>>(
     restore = { saved -> saved.map(Uri::parse).ifEmpty { null } },
 )
 
+/** List<String>? 的 Saver（端侧导入分流的页文件队列；null=没有待跑队列） */
+private val stringListSaver = Saver<List<String>?, List<String>>(
+    save = { it.orEmpty() },
+    restore = { saved -> saved.ifEmpty { null } },
+)
+
 /** runScan 的一页输入：识别用的临时页文件（PDF 已先栅格化成页 PNG，与图片页同构） */
 private data class PageInput(val file: File)
 
@@ -212,8 +218,8 @@ fun OcrApp(
         }
         while (isActive) {
             deviceReady = runCatching {
-                if (mode == OcrMode.OnDevice) ocrEngine.refreshReadiness().filesReady
-                else ocrEngine.readiness().filesReady
+                if (mode == OcrMode.OnDevice) ocrEngine.refreshReadiness().usable
+                else ocrEngine.readiness().usable
             }.getOrNull()
             delay(1000)
         }
@@ -236,6 +242,51 @@ fun OcrApp(
         controller.isAppearanceLightNavigationBars = !dark
     }
 
+    // ── 端侧导入分流：拍照/相册/PDF 在端侧模式下不再走 ScanOverlay 进度流，
+    // 而是落地成页文件后路由到「流式识别渲染」页逐张跑（边生成边渲染），
+    // 全部完成后由该页落识别历史（见 OcrStreamScreen 的导入队列）。
+    // 声明位置必须在 startStreamImport 之前（局部函数不能前向引用）
+    var pendingStreamPages by rememberSaveable(stateSaver = stringListSaver) {
+        mutableStateOf<List<String>?>(null)
+    }
+    var pendingStreamMerge by rememberSaveable { mutableStateOf(false) }
+
+    /**
+     * 端侧导入 → 流式识别渲染页：把输入落地成页文件（普通图 stageUri；PDF 逐页栅格化，
+     * 与 runScan 同一套），存进 [pendingStreamPages] 队列后路由过去。栅格化耗时用
+     * ScanOverlay 给一句反馈，路由前复位，避免浮层盖到新页面上。
+     */
+    suspend fun startStreamImport(uris: List<Uri>, merge: Boolean, pdfUri: Uri?) {
+        val readiness = runCatching { ocrEngine.refreshReadiness() }.getOrNull()
+        if (readiness?.usable != true) {
+            scanState = ScanState.Failed("端侧模型还没有就绪：去 设置 → 管理端侧模型 处理")
+            return
+        }
+        try {
+            scanState = ScanState.Running(0, 0, "准备中…")
+            val pages = mutableListOf<File>()
+            uris.forEachIndexed { i, u ->
+                pages += store.stageUri(context, u, i)
+            }
+            if (pdfUri != null) {
+                scanState = ScanState.Running(0, 0, "PDF 栅格化中…")
+                val rasterDir = File(context.cacheDir, "scan_pdf_${System.currentTimeMillis()}")
+                pages += PdfPageSource.rasterize(context, pdfUri, rasterDir)
+            }
+            if (pages.isEmpty()) {
+                scanState = ScanState.Idle
+                return
+            }
+            // PDF 天然是一份试卷的多页，与多选合并一样整卷合成一条（对齐 runScan 语义）
+            pendingStreamMerge = merge || pdfUri != null
+            pendingStreamPages = pages.map { it.absolutePath }
+            scanState = ScanState.Idle
+            route = OcrRoute.StreamRec
+        } catch (e: Exception) {
+            scanState = ScanState.Failed(e.message ?: "导入失败")
+        }
+    }
+
     suspend fun runScan(uris: List<Uri>, merge: Boolean, pdfUri: Uri? = null) {
         // 配置门槛按模式各自判定，不再读 settings.configured —— 它的端侧分支在主线程
         // 同步调 readinessSnapshot，那把锁与 inference 线程 update()（含 fsync）争用。
@@ -250,7 +301,7 @@ fun OcrApp(
         val configured = when (settings.mode) {
             OcrMode.Cloud -> settings.credential.isNotBlank()
             OcrMode.Local -> settings.baseUrl.isNotBlank()
-            OcrMode.OnDevice -> readiness?.filesReady == true
+            OcrMode.OnDevice -> readiness?.usable == true
         }
         if (!configured) {
             scanState = ScanState.Failed(
@@ -438,6 +489,22 @@ fun OcrApp(
         if (ok && uri != null) pendingUris = listOf(uri)
     }
 
+    /**
+     * 导入三入口（拍照 / 相册 / PDF）的统一分流：端侧模式 → startStreamImport
+     * （流式识别渲染体验），云端/本地 → 旧 runScan（ScanOverlay 进度流）不变。
+     * 自带 scope.launch，调用点直接调，不用再包协程。
+     * 定义在 runScan / startStreamImport 之后（局部函数不能前向引用）。
+     */
+    fun startScanOrStream(uris: List<Uri>, merge: Boolean, pdfUri: Uri? = null) {
+        scope.launch {
+            if (settings.mode == OcrMode.OnDevice) {
+                startStreamImport(uris, merge, pdfUri)
+            } else {
+                runScan(uris, merge, pdfUri)
+            }
+        }
+    }
+
     fun launchPicker() {
         pickImages.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly))
     }
@@ -488,6 +555,15 @@ fun OcrApp(
                     onBack = { route = OcrRoute.Home },
                     engine = ocrEngine,
                     initialPath = startPipelinePath,
+                    // 端侧导入分流（拍照/相册/PDF）：队列 + 落盘方式 + 完成回调
+                    initialQueue = pendingStreamPages ?: emptyList(),
+                    queueMerge = pendingStreamMerge,
+                    onQueueAccepted = { pendingStreamPages = null },
+                    onRecordsSaved = {
+                        scope.launch {
+                            scanned = store.list()
+                        }
+                    },
                 )
 
                 // 流水识别测试页（WP4）：选图/深链 scanpath → 端侧流水线 → 区域流式 → export 产物。
@@ -614,18 +690,18 @@ fun OcrApp(
                     count = uris.size,
                     onMerge = {
                         pendingUris = null
-                        scope.launch { runScan(uris, merge = true) }
+                        startScanOrStream(uris, merge = true)
                     },
                     onSeparate = {
                         pendingUris = null
-                        scope.launch { runScan(uris, merge = false) }
+                        startScanOrStream(uris, merge = false)
                     },
                     onCancel = { pendingUris = null },
                 )
             } else {
                 LaunchedEffect(uris) {
                     pendingUris = null
-                    scope.launch { runScan(uris, merge = true) }
+                    startScanOrStream(uris, merge = true)
                 }
             }
         }
@@ -635,7 +711,7 @@ fun OcrApp(
         pendingPdf?.let { uri ->
             LaunchedEffect(uri) {
                 pendingPdf = null
-                runScan(emptyList(), merge = true, pdfUri = uri)
+                startScanOrStream(emptyList(), merge = true, pdfUri = uri)
             }
         }
 

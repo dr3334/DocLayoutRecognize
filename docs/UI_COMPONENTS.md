@@ -307,6 +307,18 @@
   它是唯一"真识别"入口；深链 `--ei ocr 6 --es scanpath <应用可读路径>` 直达即自动开跑。
 - 分层不变：识别调用全走 `data/local/LocalOcrEngine` 门面，`ui/` 无直接 IO；
   `cn/local/ocr` 仍无 Compose。
+- **导入队列（拍照/相册/PDF 端侧模式分流）**：`OcrApp.startScanOrStream` 在端侧模式下
+  把输入落地成页文件（stageUri / PDF 栅格化）存进 `pendingStreamPages`（saveable），
+  路由到本页 `initialQueue`。页面逐张 runOne：终态时轮询循环收集记录 id 并清掉队首 +
+  **把 jobDocId 一并置 null**（推进效应的门槛，不清则第 2 张永不开跑）；全部跑完后由
+  `LocalOcrEngine.exportOutcome`（从已完成的引擎记录组装产物，不重跑）+ `OcrStore.saveOnDevice`
+  落历史（合并=一条多页 / 分开=每张一条），回调 `onRecordsSaved` 刷新首页列表。
+  云端/本地模式导入仍走旧 `runScan`（ScanOverlay 进度流），行为不变。
+- **readiness 两级就绪态（踩坑记录）**：引擎 state 有 `files-ready`（磁盘对账通过）和
+  `ready`（已实际加载，更强）两级。**门槛判定一律用 `LocalReadiness.usable`
+  （两级都算就绪）**——只认 `filesReady` 的话，引擎一旦加载、state 变 ready，
+  第二次识别（选图/导入）会被误拒「模型还没就绪」，报错文案还自相矛盾。
+  模型页徽标那种要区分两级的展示才用 filesReady / engineReady。
 - **图片块（插图）的路径两种根**：引擎把插图区域检出为 `type=image` 块（text 空、
   `resource=assets/p0001-bXXX.png`，相对**记录目录**）。`DocumentIrMapper.resolveResources`
   在 readExport 时把真实记录的 resource 改写成裁剪图**绝对路径**；`OcrStreamDemo.toMarkdown`

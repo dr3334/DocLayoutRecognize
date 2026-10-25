@@ -70,6 +70,7 @@ import com.doclayout.recognize.data.local.LocalIrExport
 import com.doclayout.recognize.data.local.LocalJobStatus
 import com.doclayout.recognize.data.local.LocalOcrEngine
 import com.doclayout.recognize.data.local.LocalStreamRegion
+import com.doclayout.recognize.data.local.OnDevicePage
 import com.doclayout.recognize.data.local.OcrStore
 import com.doclayout.recognize.data.local.OcrStreamDemo
 import com.doclayout.recognize.data.local.OcrStreamExport
@@ -155,6 +156,19 @@ fun OcrStreamScreen(
     engine: LocalOcrEngine? = null,
     /** 深链 --es scanpath 直达的图片绝对路径（应用可读位置）；仅 engine 非 null 时生效 */
     initialPath: String? = null,
+    /**
+     * 导入队列（拍照 / 相册 / PDF 在端侧模式下由 OcrApp 分流过来）：待识别页文件的绝对路径。
+     * 页面逐张跑真实流水线——每张都完整经历「边生成边渲染 → 终态框联动」，一张完成自动
+     * 开跑下一张；全部跑完后按 [queueMerge] 落识别历史（一条多页 / 每张一条）并回调
+     * [onRecordsSaved]。空列表 = 普通入口（本页选图 / 深链），行为与从前完全一致。
+     */
+    initialQueue: List<String> = emptyList(),
+    /** 导入队列的落盘方式：true=全部页合成一条（多选合并 / PDF 整卷），false=每张一条 */
+    queueMerge: Boolean = false,
+    /** 队列被页面接受时回调（OcrApp 清掉自己的 pending 副本，防重进页面重放） */
+    onQueueAccepted: () -> Unit = {},
+    /** 导入队列全部识别并落盘完成后回调（OcrApp 重读历史列表） */
+    onRecordsSaved: () -> Unit = {},
 ) {
     val c = Ocr.colors
     val context = LocalContext.current
@@ -185,6 +199,14 @@ fun OcrStreamScreen(
     var recError by remember { mutableStateOf<String?>(null) }
     val running = jobStatus?.let { it.running && !it.terminal } == true
 
+    // ── 导入队列（OcrApp 分流来的拍照/相册/PDF）。queue 是待跑列表（队首=正在跑或下一个），
+    // queueDone 收集已完成页的引擎记录 id。全部 saveable：旋转/进程重建后队列继续——
+    // 引擎作业在 :ocr 进程本来就活着，重进页面轮询会自动接上
+    var queue by rememberSaveable(stateSaver = StringListSaver) { mutableStateOf(initialQueue) }
+    var queueDone by rememberSaveable(stateSaver = StringListSaver) { mutableStateOf(emptyList<String>()) }
+    var queueMergeMode by rememberSaveable { mutableStateOf(queueMerge) }
+    var queueModel by rememberSaveable { mutableStateOf("") }
+
     val phase = when {
         recPage != null -> StreamPhase.Done
         jobStatus != null -> StreamPhase.Recognizing
@@ -213,9 +235,11 @@ fun OcrStreamScreen(
             starting = true
             recError = null
             try {
-                // 先磁盘对账回写引擎内存 readiness：模型没就绪就明说，别让用户等报错
+                // 先磁盘对账回写引擎内存 readiness：模型没就绪就明说，别让用户等报错。
+                // usable = files-ready 或 ready（引擎已加载）：只认 filesReady 会在引擎
+                // 加载后的第二次识别误报"模型还没就绪"（真机踩过的坑，详见其定义处注释）
                 val ready = eng.refreshReadiness()
-                if (!ready.filesReady) {
+                if (!ready.usable) {
                     recError = "模型还没就绪（${ready.state}）：${ready.message}\n去 设置 → 管理端侧模型 处理"
                     return@launch
                 }
@@ -263,6 +287,22 @@ fun OcrStreamScreen(
                     val export: LocalIrExport? = runCatching { eng.readExport(id) }.getOrNull()
                     recPage = export?.page
                     recFramePath = export?.inputPath
+                    // 导入队列模式：本页终态 → 收集记录 id、清掉队首；还有剩余页时**必须**
+                    // 把会话身份一并清掉（jobDocId 置 null）——推进效应的门槛就是
+                    // 「队列非空 && jobDocId == null」，不清的话第 2 张永远不会开跑
+                    // （真机踩过：第 1 张终态后页面停在完成态，队列挂着不动）
+                    if (queue.isNotEmpty()) {
+                        if (id !in queueDone) {
+                            queueDone = queueDone + id
+                            if (s.modelChoice.isNotBlank()) queueModel = s.modelChoice
+                        }
+                        queue = queue.drop(1)
+                        if (queue.isNotEmpty()) {
+                            jobDocId = null
+                            jobJobId = null
+                            jobStatus = null
+                        }
+                    }
                     break
                 }
             }
@@ -280,6 +320,19 @@ fun OcrStreamScreen(
         initialPathConsumed = true
         val file = File(path)
         if (!file.isFile) recError = "找不到图片：$path" else runOne(file)
+    }
+
+    // 导入队列驱动：页面空闲（没在跑、没报错）且队列还有待跑页 → 自动开跑队首。
+    // 覆盖两种时机：首次带队列进入本页；上一页终态被轮询循环清掉队首之后
+    LaunchedEffect(queue, jobDocId, recError, starting) {
+        if (engine == null || queue.isEmpty()) return@LaunchedEffect
+        if (jobDocId == null && recError == null && !starting) {
+            runOne(File(queue.first()))
+        }
+    }
+    // 队列被接受后立刻通知 OcrApp 清掉 pending 副本（重进页面不会把同一批再跑一遍）
+    LaunchedEffect(initialQueue) {
+        if (initialQueue.isNotEmpty()) onQueueAccepted()
     }
 
     fun cancelJob() {
@@ -428,6 +481,47 @@ fun OcrStreamScreen(
         if (hintText != null) {
             delay(1600)
             hintText = null
+        }
+    }
+
+    // 导入队列全部跑完（queue 已清空、queueDone 有货）→ 落识别历史。
+    // 与 runScan 端侧分支同一套落盘语义：合并=一条多页记录，否则每张一条；
+    // OnDevicePage.file 用引擎规范化图 source.png（staged 临时文件可能已被清理）
+    LaunchedEffect(queue, queueDone) {
+        val done = queueDone
+        if (engine == null || done.isEmpty() || queue.isNotEmpty()) return@LaunchedEffect
+        queueDone = emptyList<String>() // 先清：防旋转重建后同一批重复落盘
+        val eng = engine
+        scope.launch {
+            val outcomes = done.mapNotNull { eng.exportOutcome(it, queueModel) }
+            if (outcomes.isEmpty()) {
+                hintText = "识别结束，但没有可保存的文字结果"
+                return@launch
+            }
+            val label = LocalOcrEngine.engineLabel(queueModel)
+            val created = if (queueMergeMode) {
+                listOf(
+                    store.saveOnDevice(
+                        title = OcrStore.titleFor(outcomes.size),
+                        engine = label,
+                        elapsedMs = outcomes.sumOf { it.elapsedMs },
+                        pages = outcomes.map {
+                            OnDevicePage(File(it.inputPath ?: ""), it.markdown, it.assetsDir)
+                        },
+                    ),
+                )
+            } else {
+                outcomes.map {
+                    store.saveOnDevice(
+                        title = OcrStore.titleFor(1),
+                        engine = label,
+                        elapsedMs = it.elapsedMs,
+                        pages = listOf(OnDevicePage(File(it.inputPath ?: ""), it.markdown, it.assetsDir)),
+                    )
+                }
+            }
+            onRecordsSaved()
+            hintText = if (created.size == 1) "已存入识别历史" else "已存入 ${created.size} 条识别历史"
         }
     }
 
@@ -867,6 +961,12 @@ private val CustomOrderSaver = Saver<List<String>?, List<String>>(
 private val OrderHistorySaver = Saver<List<List<String>?>, List<List<String>>>(
     save = { history -> history.map { order -> order.orEmpty() } },
     restore = { saved -> saved.map { order -> if (order.isEmpty()) null else order } },
+)
+
+/** 导入队列/已完成列表的 Saver：List<String> 本身就能进 Bundle，原样往返 */
+private val StringListSaver = Saver<List<String>, List<String>>(
+    save = { it },
+    restore = { it },
 )
 
 /**
