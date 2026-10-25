@@ -66,7 +66,17 @@ android {
 
     buildTypes {
         debug { minifyEnabled false }
-        release { minifyEnabled false }
+        release {
+            // R8 收缩/优化/混淆 + 资源收缩：包体更小、冷启动更快（类加载量减半）。
+            // 本应用反射面为零（r8-analyzer 技能排查：JNI 只回调平台类、手工 Binder
+            // 无类名反射、org.json 手工解析），所需 keep 全部由 AGP 默认规则覆盖
+            // （native 方法 / @JavascriptInterface / Manifest 组件）。
+            // 签名沿用 debug keystore：本应用不走商店，侧载安装即可，无需独立签名。
+            minifyEnabled true
+            shrinkResources true
+            proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'), 'proguard-rules.pro'
+            signingConfig signingConfigs.debug
+        }
     }
 
     compileOptions {
