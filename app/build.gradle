@@ -21,8 +21,8 @@ android {
         applicationId "com.doclayout.recognize"
         minSdk 26
         targetSdk 35
-        versionCode 3
-        versionName "1.1.1"
+        versionCode 4
+        versionName "1.2.0"
 
         // mnn_prebuilt.cmake 对 ABI 精确匹配，预编译 MNN 只提供 arm64-v8a（真机）；
         // RaTeX AAR 的 x86_64/v7a .so 被 abiFilters 自动过滤，APK 反而更小。
