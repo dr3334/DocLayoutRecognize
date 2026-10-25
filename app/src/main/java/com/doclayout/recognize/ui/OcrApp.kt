@@ -534,15 +534,17 @@ fun OcrApp(
             // 宽度走 settingsPanelWidth（measure 期算 75% 且封顶 480dp，平板/横屏不再占 960dp+），
             // 主界面保持原比例，只盖一层暗色 —— 面板是"覆盖"，不是"挤压"。
             // 点暗处关闭，手感和 ModalBottomSheet 的 scrim 一致。
-            // scrim 常驻组合、透明度走 Draw 阶段：旧写法 if(scrimAlpha>0) + copy(alpha)
-            // 在动画期间每帧重组并新建 Color
-            Box(
-                Modifier
-                    .fillMaxSize()
-                    .graphicsLayer { alpha = if (scrimAlpha > 0.01f) 0.30f * scrimAlpha else 0f }
-                    .background(colors.scrim)
-                    .clickable(enabled = settingsOpen) { settingsOpen = false },
-            )
+            // scrim 必须条件组合：试过"常驻组合 + graphicsLayer{alpha=0} + clickable(enabled)"
+            // 的写法，真机上会吞掉全屏触摸（点击无响应）——关闭态宁可接受动画期
+            // copy(alpha) 的小分配，也不能让隐形层挡在输入路径上。
+            if (scrimAlpha > 0.01f) {
+                Box(
+                    Modifier
+                        .fillMaxSize()
+                        .background(colors.scrim.copy(alpha = 0.30f * scrimAlpha))
+                        .clickable { settingsOpen = false },
+                )
+            }
 
             // 面板始终挂着（收起时只是平移到屏幕外）：否则第一次打开要现组合 30 个设置行，
             // 会有一下明显的停顿；组合过一次之后就一直复用。
