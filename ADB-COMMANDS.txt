@@ -116,6 +116,11 @@ adb shell "run-as com.doclayout.recognize sh -c 'mkdir -p files/inbox && cat > f
 #     跑完看产物（document.json / document.md / run-manifest.json 在记录目录根）：
 & adb shell run-as com.doclayout.recognize ls files/documents/
 
+#     ★ 深链调试完的收尾：scanpath 会留在任务的 base intent 里，force-stop 后从
+#     最近任务卡片点回应用会重放这条深链（自动识别同一张图）。这是 Android
+#     recents 的固有行为，应用侧拦不住（代码里 OcrApp 的消费门闩只能挡
+#     saved state 还在的重开）。调试完在最近任务里把应用划掉再正常使用。
+
 # 3.13 纸张边界裁剪页（拍照/相册导入统一先过此页；--ei ocr 7 配 --es scanpath 直达）
 & adb shell am force-stop com.doclayout.recognize
 & adb shell am start -n com.doclayout.recognize/.MainActivity --ei ocr 7 --es scanpath /data/user/0/com.doclayout.recognize/files/inbox/paper.jpg

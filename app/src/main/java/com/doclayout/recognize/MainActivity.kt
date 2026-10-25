@@ -36,19 +36,36 @@ class MainActivity : ComponentActivity() {
         // 窗口延伸到系统栏后面：不调用的话 minSdk 26~34 上内容不绘入状态栏区域，
         // 浅色主题的深色状态栏底 + OcrApp 画的深色图标 = 图标看不见（API 35+ 才默认延伸）
         enableEdgeToEdge()
+        // intent extra 先读进局部值、读完即清：调试深链（scan / scanpath）只在本次
+        // 启动生效，不留在 Activity intent 里被后续重建反复读入。顺序必须"先读后清"——
+        // setContent 的 content lambda 执行时 intent 里已经没有这些 extra 了。
+        // 注意 removeExtra 只能挡"同进程 relaunch"（旋转等场景复用同一个 intent 对象）；
+        // force-stop 后从最近任务重开投递的是 system_server 里存的原始 base intent，
+        // 应用进程改不到它 —— 那条路靠 OcrApp 的深链消费门闩（saved state 恢复）+
+        // 调试完从最近任务划掉兜底（见 OcrApp.kt / ADB-COMMANDS.txt）
+        val startRoute = intent.getIntExtra("ocr", 0)
+        val startDark = intent.getIntExtra("dark", 0) == 1
+        val startEmpty = intent.getIntExtra("empty", 0) == 1
+        val startRecord = intent.getIntExtra("record", 0)
+        val startOpen = intent.getIntExtra("open", 0) == 1
+        // split = 左栏占比百分比（50 = 1:1，25 = 1:3，0 = 只看文本）
+        val startSplit = intent.getIntExtra("split", 50) / 100f
+        val startScanPath = intent.getStringExtra("scan")
+        val startPipelinePath = intent.getStringExtra("scanpath")
+        intent.removeExtra("scan")
+        intent.removeExtra("scanpath")
         setContent {
             MaterialTheme {
                 OcrApp(
                     onExit = { finish() },
-                    startRoute = intent.getIntExtra("ocr", 0),
-                    startDark = intent.getIntExtra("dark", 0) == 1,
-                    startEmpty = intent.getIntExtra("empty", 0) == 1,
-                    startRecord = intent.getIntExtra("record", 0),
-                    startOpen = intent.getIntExtra("open", 0) == 1,
-                    // split = 左栏占比百分比（50 = 1:1，25 = 1:3，0 = 只看文本）
-                    startSplit = intent.getIntExtra("split", 50) / 100f,
-                    startScanPath = intent.getStringExtra("scan"),
-                    startPipelinePath = intent.getStringExtra("scanpath"),
+                    startRoute = startRoute,
+                    startDark = startDark,
+                    startEmpty = startEmpty,
+                    startRecord = startRecord,
+                    startOpen = startOpen,
+                    startSplit = startSplit,
+                    startScanPath = startScanPath,
+                    startPipelinePath = startPipelinePath,
                 )
             }
         }

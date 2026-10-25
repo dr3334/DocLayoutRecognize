@@ -157,6 +157,13 @@ fun OcrStreamScreen(
     /** 深链 --es scanpath 直达的图片绝对路径（应用可读位置）；仅 engine 非 null 时生效 */
     initialPath: String? = null,
     /**
+     * initialPath 被本页消费时上报（参数带的是被消费的路径）。一次性门闩放在调用方
+     * OcrApp（常驻组合，saveable 跨页面切换存活）而不是本页：when(route) 分支离开组合时
+     * 页面级 rememberSaveable 随之销毁、重进即复位，旧深链会被当作新深链再消费一次。
+     * 默认空实现，演示模式调用点不受影响。
+     */
+    onInitialPathConsumed: (String) -> Unit = {},
+    /**
      * 导入队列（拍照 / 相册 / PDF 在端侧模式下由 OcrApp 分流过来）：待识别页文件的绝对路径。
      * 页面逐张跑真实流水线——每张都完整经历「边生成边渲染 → 终态框联动」，一张完成自动
      * 开跑下一张；全部跑完后按 [queueMerge] 落识别历史（一条多页 / 每张一条）并回调
@@ -228,9 +235,30 @@ fun OcrStreamScreen(
     // 终态回放是否进行中：false 时下半区直接给终稿全文，不逐字
     var replaying by remember { mutableStateOf(false) }
 
+    // 轻提示（1.6s 自散）。声明提到 runOne 之前：拒绝重入这类"时机不对"的提示要
+    // 从 runOne 里发，Kotlin 局部函数只能引用先声明的变量
+    var hintText by remember { mutableStateOf<String?>(null) }
+    LaunchedEffect(hintText) {
+        if (hintText != null) {
+            delay(1600)
+            hintText = null
+        }
+    }
+
     // ── 真实识别的启动 / 轮询 / 取消 / 选图（逻辑与流水识别测试页同源，见 OcrPipelineScreen）
     fun runOne(file: File) {
         val eng = engine ?: return
+        // 活跃会话（启动中/识别中）不允许再起新作业：引擎一次只跑一个作业，后到的
+        // createInput 只会落一条 pending-ocr 记录永远晾着，两边还会互相覆盖 jobDocId/
+        // recImagePath（jc02 劫持事故里"所选图永远 pending-ocr"的放大器）。想换图先取消
+        // 或等终态。starting 也要算：runOne 刚发起、首个状态快照还没回来时
+        // jobStatus 仍为 null，只看 jobStatus 会有漏判窗口。
+        // jobStatus 是委托属性（by mutableStateOf），不能 smart cast，
+        // 用 ?.terminal != true 同时覆盖"还没快照(null)"和"跑着未终态"两种活跃态
+        if (starting || (jobDocId != null && jobStatus?.terminal != true)) {
+            hintText = "已有识别在进行，先取消或等它完成"
+            return
+        }
         scope.launch {
             starting = true
             recError = null
@@ -311,13 +339,15 @@ fun OcrStreamScreen(
     }
 
     // 深链直达：--ei ocr 6 --es scanpath <应用可读路径>（OcrApp 没实现 onNewIntent，先 force-stop）。
-    // 消费标志必须 saveable：旋转重建后 intent extra 原样重投，不挡住就会重复 createInput
-    var initialPathConsumed by rememberSaveable { mutableStateOf(false) }
+    // 消费即上报 OcrApp 的一次性门闩（onInitialPathConsumed）：门闩在常驻组合的 OcrApp 层，
+    // 跨页面切换 / 旋转 / 进程重建都存活，本页重进时 initialPath 已被换成 null，
+    // 不会把同一条深链再消费一遍。找不到文件也照样标记消费——无效路径不该在
+    // 每次重进页面时反复弹错
     LaunchedEffect(initialPath) {
         if (engine == null) return@LaunchedEffect
         val path = initialPath
-        if (path == null || initialPathConsumed) return@LaunchedEffect
-        initialPathConsumed = true
+        if (path == null) return@LaunchedEffect
+        onInitialPathConsumed(path)
         val file = File(path)
         if (!file.isFile) recError = "找不到图片：$path" else runOne(file)
     }
@@ -475,14 +505,8 @@ fun OcrStreamScreen(
     }
 
     // 选中区域 = 复制它的内容并给一条轻提示；再点同一块取消选中（不复制）
+    // （hintText 的声明在 runOne 之前，见上面"轻提示"注释）
     val clipboard = LocalClipboardManager.current
-    var hintText by remember { mutableStateOf<String?>(null) }
-    LaunchedEffect(hintText) {
-        if (hintText != null) {
-            delay(1600)
-            hintText = null
-        }
-    }
 
     // 导入队列全部跑完（queue 已清空、queueDone 有货）→ 落识别历史。
     // 与 runScan 端侧分支同一套落盘语义：合并=一条多页记录，否则每张一条；

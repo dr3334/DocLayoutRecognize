@@ -126,6 +126,12 @@ fun OcrPipelineScreen(
     engine: LocalOcrEngine,
     onOpenStream: () -> Unit = {},
     initialPath: String? = null,
+    /**
+     * initialPath 被本页消费时上报（参数带的是被消费的路径）。一次性门闩放在调用方
+     * OcrApp（常驻组合，saveable 跨页面切换存活）而不是本页：when(route) 分支离开组合时
+     * 页面级 rememberSaveable 随之销毁、重进即复位，旧深链会被当作新深链再消费一次。
+     */
+    onInitialPathConsumed: (String) -> Unit = {},
 ) {
     val c = Ocr.colors
     val context = LocalContext.current
@@ -154,6 +160,16 @@ fun OcrPipelineScreen(
     val running = status?.running == true
 
     fun runOne(file: File) {
+        // 活跃会话（启动中/识别中）不允许再起新作业：引擎一次只跑一个作业，后到的
+        // createInput 只会落一条 pending-ocr 记录永远晾着，两边还会互相覆盖 docId/status。
+        // 想换图先取消或等终态。starting 也要算：runOne 刚发起、首个状态快照还没回来时
+        // status 仍为 null，只看 status 会有漏判窗口。
+        // status 是委托属性（by mutableStateOf），不能 smart cast，
+        // 用 ?.terminal != true 同时覆盖"还没快照(null)"和"跑着未终态"两种活跃态
+        if (starting || (docId != null && status?.terminal != true)) {
+            hint = "已有识别在进行，先取消或等它完成"
+            return
+        }
         scope.launch {
             starting = true
             error = null
@@ -221,12 +237,14 @@ fun OcrPipelineScreen(
 
     // 深链直达：--ei ocr 4 --es scanpath <应用可读路径>。路径必须配合 ocr 4 使用，
     // 因为只有 Pipeline 页组合时这段才会跑（OcrApp 没实现 onNewIntent，深链前先 force-stop）。
-    // 消费标志必须 saveable：旋转重建后 intent extra 原样重投，不挡住就会重复 createInput
-    var initialPathConsumed by rememberSaveable { mutableStateOf(false) }
+    // 消费即上报 OcrApp 的一次性门闩（onInitialPathConsumed）：门闩在常驻组合的 OcrApp 层，
+    // 跨页面切换 / 旋转 / 进程重建都存活，本页重进时 initialPath 已被换成 null，
+    // 不会把同一条深链再消费一遍。找不到文件也照样标记消费——无效路径不该在
+    // 每次重进页面时反复弹错
     LaunchedEffect(initialPath) {
         val path = initialPath
-        if (path == null || initialPathConsumed) return@LaunchedEffect
-        initialPathConsumed = true
+        if (path == null) return@LaunchedEffect
+        onInitialPathConsumed(path)
         val file = File(path)
         if (!file.isFile) {
             error = "找不到调试图片：$path"

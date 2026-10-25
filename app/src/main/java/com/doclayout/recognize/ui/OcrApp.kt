@@ -494,6 +494,23 @@ fun OcrApp(
         }
     }
 
+    // ── 深链 scanpath 的一次性消费门闩（按路径记值，与上面 startScanConsumed 同类但记值）。
+    //
+    // 门闩必须放在 OcrApp（常驻组合）而不是 StreamRec / Pipeline 页内：when(route) 切到
+    // 别的分支时页面整个离开组合，页面级 rememberSaveable 没有保存点（when 直切不等于
+    // 导航返回栈），重进必然复位 —— 调试深链留在 intent 里的 scanpath 会被当作新深链
+    // 再消费一次，runOne(旧深链图) 与相册导入的队列作业并发，把用户真正要识别的图
+    // 永远晾在 pending-ocr（「相册导入总识别成 jc02」事故的根因）。
+    //
+    // 消费路径回填后 livePipelinePath 变 null，页面重进/旋转/进程重建（saved state 恢复）
+    // 都不会再消费同一条深链；只有 force-stop 后从最近任务重开（saved state 清空 +
+    // 系统重投 base intent）拦不住 —— 那是 Android recents 重放深链的固有语义，
+    // 调试完从最近任务划掉应用即可（见 ADB-COMMANDS.txt 深链小节）。
+    //
+    // 按路径记值而非布尔：将来若实现 onNewIntent 换发新的 scanpath，新路径仍能正常消费。
+    var consumedPipelinePath by rememberSaveable { mutableStateOf<String?>(null) }
+    val livePipelinePath = startPipelinePath?.takeIf { it != consumedPipelinePath }
+
     // 相册多选（Photo Picker，API 26+ 走系统文件选择器，任何版本都不需要权限）
     val pickImages = rememberLauncherForActivityResult(
         ActivityResultContracts.PickMultipleVisualMedia(9),
@@ -580,7 +597,9 @@ fun OcrApp(
                 OcrRoute.StreamRec -> OcrStreamScreen(
                     onBack = { route = OcrRoute.Home },
                     engine = ocrEngine,
-                    initialPath = startPipelinePath,
+                    // 已消费过的深链传 null（门闩见上方 consumedPipelinePath 注释）
+                    initialPath = livePipelinePath,
+                    onInitialPathConsumed = { consumedPipelinePath = it },
                     // 端侧导入分流（拍照/相册/PDF）：队列 + 落盘方式 + 完成回调
                     initialQueue = pendingStreamPages ?: emptyList(),
                     queueMerge = pendingStreamMerge,
@@ -598,7 +617,9 @@ fun OcrApp(
                     onBack = { route = OcrRoute.Home },
                     engine = ocrEngine,
                     onOpenStream = { route = OcrRoute.Stream },
-                    initialPath = startPipelinePath,
+                    // 已消费过的深链传 null（门闩见上方 consumedPipelinePath 注释）
+                    initialPath = livePipelinePath,
+                    onInitialPathConsumed = { consumedPipelinePath = it },
                 )
 
                 // 反馈页：设置入口（体验反馈）或结果页入口（识别问题，带记录）。
@@ -814,10 +835,13 @@ fun OcrApp(
             }
         }
 
-        // 深链 --ei ocr 7 --es scanpath <路径>：直达裁剪页（调试通道，复用 scanpath 参数）
+        // 深链 --ei ocr 7 --es scanpath <路径>：直达裁剪页（调试通道，复用 scanpath 参数）。
+        // 同样过一次性门闩：旋转 / 进程重建会重跑本效应（LaunchedEffect(Unit) 随整棵
+        // 组合重建重新启动），不挡的话用户裁剪完离开裁剪页后会被再次拽回去
         LaunchedEffect(Unit) {
             val p = startPipelinePath
-            if (startRoute == 7 && !p.isNullOrBlank() && File(p).isFile) {
+            if (startRoute == 7 && !p.isNullOrBlank() && File(p).isFile && p != consumedPipelinePath) {
+                consumedPipelinePath = p
                 pendingCropUris = listOf(Uri.fromFile(File(p)))
             }
         }
